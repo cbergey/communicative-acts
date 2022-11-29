@@ -1,0 +1,202 @@
+---
+html_document:
+  code_folding: show
+author: "Claire Bergey and Dan Yurovsky"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: null
+  toc: no
+number_sections: no
+theme: lumen
+title: "reading ldp for communicative act coding"
+toc: no
+toc_float: no
+---
+  
+```{r setup, include = FALSE}
+library(knitr)
+
+library(DBI)
+library(here)
+library(data.table)
+library(tidytext)
+library(RMySQL)
+library(feather)
+library(entropy)
+library(tidyboot)
+library(widyr)
+library(feather)
+library(tidyverse)
+
+opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, 
+               error = FALSE, cache = TRUE, tidy = FALSE)
+
+# LDP auxiliary functions
+source(here("helpers/read_ldp.R"))
+
+theme_set(theme_classic(base_size = 14))
+```
+
+Read in conversation data
+```{r, eval=T, message=FALSE, eval = F}
+MIN_VISITS <- 5
+
+Mode <- function(x) {
+  x <- x[!is.na(x)]
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+#### Load and Clean Data
+# Read in LDP data
+ldp <- connect_to_ldp()
+
+# subject demographics
+demos <- get_table(ldp, "subjects") %>%
+        filter(lesion == "") %>%
+        select(id, sex, race, ethn) %>%
+        collect()
+
+# visits information and more subject demographics
+visits <- get_table(ldp, "home_visits") %>%
+  distinct(id, age_years, subject, visit_type, completed, income_category, 
+           mother_education) %>%
+  collect() %>%
+  filter(visit_type != "SB5") %>%
+  mutate(visit_type = as.numeric(gsub("[^0-9]", "", visit_type))) %>%
+  rename(visit = visit_type) %>%
+  mutate(completed = as.logical(completed),
+         income_category = as.numeric(income_category))
+
+subjs <- visits %>%
+  group_by(subject) %>%
+  summarise(completed = sum(completed),
+            income_category = Mode(income_category),
+            mother_education = Mode(mother_education)) %>%
+  filter(completed >= 12) %>%
+  select(-completed) %>%
+  right_join(demos, by = c("subject" = "id"))
+
+session_ages <- visits %>%
+        filter(subject %in% subjs$subject, completed) %>%
+        select(subject, visit, age_years) %>%
+        rename(age = age_years) %>%
+        arrange(subject, visit)
+```
+
+Get other measures
+```{r load_measures, eval = F}
+ppvt <- get_table(ldp, "ppvt") %>%
+  collect() %>%
+  select(-id) %>%
+  rename(id = visit) %>%
+  left_join(visits) %>%
+  filter(subject %in% subjs$subject) %>%
+  rename(ppvt = ppvt_raw) %>%
+  select(subject, visit, age_years, ppvt)
+  
+cdi_ws <- get_table(ldp, "cdi_words_and_sentences") %>%
+  select(id, visit, cdis_1a1_num, cdis_2e_num) %>%
+  collect() %>%
+  select(-id) %>%
+  rename(id = visit) %>%
+  left_join(visits) %>%
+  filter(subject %in% subjs$subject) %>%
+  rename(cdi_ws = cdis_1a1_num, sent_comp = cdis_2e_num) %>%
+  select(subject, visit, age_years, cdi_ws, sent_comp) %>%
+  arrange(subject, visit)
+
+measures <- full_join(ppvt, cdi_ws, by = c("subject", "visit", "age_years")) %>%
+  gather(measure, value, ppvt, cdi_ws) %>%
+  filter(!is.na(value)) %>%
+  arrange(subject, measure, visit) %>%
+  mutate(person = "child")
+
+#write_feather(measures, here("data/measures.feather"))
+```
+
+```{r setup_alignment, eval = F}
+# read data from sql connection
+utterances <- get_table(ldp, "utterances") %>%
+  select(subject, session, line, p_chat, c_chat, p_utts, c_utts, p_mor, c_mor) %>%
+  filter(p_chat != "" | c_chat != "") %>%
+  collect() %>%
+  filter(subject %in% unique(visits$id)) %>%
+  mutate(order = 1:n())
+
+two_session_utts <- utterances %>%
+  filter(subject == 22, session < 3)
+  
+# better organization of chat by person, subject, session, run
+split_utts <- utterances %>%
+  unnest_tokens(p_PoS, p_mor, drop=FALSE, token = stringr::str_split, pattern = "[ ^]") %>%
+  unnest_tokens(c_PoS, c_mor, drop=FALSE, token = stringr::str_split, pattern = "[ ']") %>%
+  mutate(pos = if_else(!is.na(p_PoS), p_PoS, c_PoS)) %>%
+  filter(pos != "") %>%
+  separate(pos, into=c("pos", "word"), sep="\\|") %>%
+  filter(!is.na(word)) %>%
+  separate(word, into=c("word", "garbage"), sep= "[^[:alnum:]]") %>%
+  select(-garbage) %>%
+  gather(person, chat, c(p_chat, c_chat)) %>%
+  mutate(person = if_else(person == "p_chat", "Parent", "Child")) %>%
+  filter(chat != "") %>%
+  arrange(order) %>%
+  mutate(run = rleid(subject, session, person)) %>%
+  group_by(run, subject, session, person) %>%
+  summarise(chat = first(chat), pos = paste0(pos, collapse = " ")) %>%
+  ungroup()
+
+
+#splits up run utterances into individual token words
+tokens <- split_utts %>%
+  unnest_tokens(word, chat) %>%
+  arrange(run, subject, session) %>%
+  filter(!word %in% c("xxx", "zzz", "zz"))
+
+# clean_utts <- utterances %>%
+#   select(-p_chat, -c_chat) %>%
+#   mutate(clean_p_utts = str_squish(str_replace_all(p_utts, "[^a-zA-Z']", " ")),
+#          clean_c_utts = str_squish(str_replace_all(c_utts, "[^a-zA-Z']", " ")),
+#          clean_p_utts = if_else(clean_p_utts == "", NA_character_, clean_p_utts),
+#          clean_c_utts = if_else(clean_c_utts == "", NA_character_, clean_c_utts),
+#          speaker = case_when(is.na(clean_p_utts) & !is.na(clean_c_utts) ~ "Target_Child",
+#                              is.na(clean_c_utts) & !is.na(clean_p_utts) ~ "Parent",
+#                              !is.na(clean_c_utts) & !is.na(clean_p_utts) ~ "Both"))
+
+utts_for_crf <- split_utts %>%
+  mutate(file_id = paste(subject, session, sep = "_"),
+         age_months = 14 + (as.numeric(session) - 1)*4,
+         speaker = if_else(person == "Child", "CHI", "ADU")
+         ) %>%
+  rename(child_id = subject,
+         tokens = chat,
+         index = run) %>%
+  select(index, file_id, child_id, age_months, tokens, pos, speaker)
+
+write_csv(utts_for_crf, here("ldp_for_crf.csv"))
+ 
+#write_feather(tokens, here("data/tokens.feather"))
+```
+
+
+```{r read-in}
+tokens <- read_feather(here("data/tokens.feather"))
+measures <- read_feather(here("data/measures.feather"))
+
+types <- tokens %>%
+  group_by(session, subject, person, word) %>%
+  summarise(n = n()) 
+
+words <- types %>%
+  ungroup() %>%
+  distinct(word)
+
+n_words <- nrow(words)
+
+session_tokens <- tokens %>%
+  group_by(person, session, subject, word) %>%
+  summarise(tokens = n()) %>%
+  summarise(tokens = sum(tokens), types = n(), unsaid_types = n_words - types)
+```

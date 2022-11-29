@@ -1,0 +1,163 @@
+---
+title: "Form and function"
+output: html_document
+---
+
+```{r setup, include=FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+library(tidyboot)
+library(ggthemes)
+library(feather)
+library(childesr)
+library(vroom)
+
+theme_set(theme_few(base_size = 10))
+```
+
+```{r read-data, message = FALSE, warning=FALSE}
+ldp <- read_feather(here("data/ldp_parsed_frames.feather"))
+act_codes <- read_csv(here("data/act_codes.csv"))
+speech_acts <- read_csv(here("data/speech_acts_ldp.csv")) %>%
+  mutate(child_id = sub("\\_.*", "", file_id),
+         transcript_id = sub(".*\\_", "", file_id),
+         index = index + 1,
+         child_id = as.numeric(child_id)) %>%
+  left_join(act_codes, by = c("y_pred" = "act_code"))
+ldp <- ldp %>%
+  left_join(speech_acts %>% select(index, file_id, child_id, transcript_id, y_pred, meaning), 
+            by = c("index", "file_id", "child_id"))
+
+speech_acts %>%
+  filter(is.na(meaning)) %>%
+  distinct(y_pred)
+# TODO: fix meaning codes for acts above
+
+n_transcripts <- ldp %>%
+  select(file_id) %>%
+  distinct(file_id) %>%
+  nrow()
+
+n_children <- ldp %>%
+  select(child_id) %>%
+  distinct(child_id) %>%
+  nrow()
+#104 children -- includes children with traumatic brain injury
+
+```
+
+```{r, message = FALSE}
+frame_freqs <- ldp %>%
+  count(utt_parse) %>%
+  arrange(desc(n)) %>%
+  mutate(num_tokens = str_count(str_remove_all(utt_parse, "[,.!?']"),"\\S+")) 
+
+act_freqs <- ldp %>%
+  count(meaning, y_pred) %>%
+  arrange(desc(n))
+
+top_frames <- frame_freqs %>%
+  slice(1:50) 
+
+frames <- ldp %>%
+  mutate(age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (54/20)*age_bin + 6,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  count(speaker_role, utt_parse, age_bin)
+
+frames %>%
+  filter(utt_parse %in% top_frames$utt_parse) %>%
+  ggplot(aes(x = age_bin, y = n, group = utt_parse, 
+             fill = as.factor(utt_parse))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role) +
+  labs(x = "Age (months)", y = "Frame proportion")
+```
+
+Top frames over development.
+
+```{r, message = FALSE}
+multiword_frames <- frame_freqs %>%
+  filter(num_tokens > 1) %>%
+  slice(1:25) 
+
+frames %>%
+  filter(utt_parse %in% multiword_frames$utt_parse) %>%
+  ggplot(aes(x = age_bin, y = n, group = utt_parse, 
+             fill = as.factor(utt_parse))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role) +
+  labs(x = "Age (months)", y = "Frame proportion")
+```
+
+Top frames with more than one word over development.
+
+```{r, message = FALSE}
+three_plus_word_frames <- frame_freqs %>%
+  filter(num_tokens > 3) %>%
+  slice(1:25) 
+
+frames %>%
+  filter(utt_parse %in% three_plus_word_frames$utt_parse) %>%
+  ggplot(aes(x = age_bin, y = n, group = utt_parse, 
+             fill = as.factor(utt_parse))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role) +
+  labs(x = "Age (months)", y = "Frame proportion")
+```
+
+Top frames with more than three words over development.
+
+```{r, message = FALSE}
+
+top_frames <- frame_freqs %>%
+  slice(1:40)
+
+top_acts <- act_freqs %>%
+  slice(1:40)
+
+frames_x_acts <- ldp %>%
+  filter(utt_parse %in% top_frames$utt_parse) %>%
+  filter(y_pred %in% top_acts$y_pred) %>%
+  count(speaker, utt_parse, meaning)
+
+frames_x_acts %>%
+  group_by(utt_parse) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup() %>% 
+  ggplot(aes(x=meaning, y=utt_parse, fill=log(prob))) + 
+  geom_tile() +
+  facet_wrap(~speaker, scales = "free") +
+  viridis::scale_fill_viridis()
+
+```
+
+```{r, message = FALSE}
+mis_form_function <- read_csv(here("data/form_function_mis.csv"))
+
+mis_form_function %>%
+  ggplot(aes(age_bin, mi, color = type, group = type)) +
+  geom_line() +
+  ylab("Mutual Information (bits)") +
+  xlab("Age") +
+  ggtitle("Mutual information between form and function over development")
+
+```
+
+
+```{r}
+get_anti_frame <- function(gloss, frame) {
+  split_gloss = unlist(strsplit(gloss, " "))
+  split_frame = unlist(strsplit(frame, " "))
+  anti_frame <- split_gloss[!split_gloss %in% split_frame]
+  return(paste(unlist(anti_frame), collapse=' '))
+}
+get_anti_frame <- Vectorize(get_anti_frame)
+
+childes_htmm_pdwz <- childes_htmm_pdwz %>%
+  mutate(anti_frame = get_anti_frame(gloss, utt_parse))
+
+```

@@ -1,0 +1,102 @@
+---
+title: "frames-filtering"
+output: html_document
+author: "Claire Bergey"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(knitr)
+library(here)
+library(dplyr)
+library(entropy)
+library(tidyboot)
+library(tidyverse)
+library(childesr)
+library(RColorBrewer)
+library(udpipe)
+library(feather)
+
+opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, 
+               error = FALSE, cache = TRUE, tidy = FALSE)
+
+theme_set(theme_classic(base_size = 14))
+```
+
+```{r read-data}
+ldp <- read_csv(here("data/ldp_for_crf.csv")) %>%
+  mutate(tokens = str_replace_all(tokens, ",", " , "),
+         tokens = str_replace_all(tokens, "[_+&@]", " "),
+         tokens = str_replace_all(tokens, "  ", " "),
+         tokens = str_replace_all(tokens, "  ", " "))
+
+types <- ldp %>%
+  mutate(tokens = str_split(tokens, " ")) %>%
+  unnest(tokens) %>%
+  group_by(tokens) %>%
+  count(tokens) %>%
+  rename(word = tokens) %>%
+  arrange(desc(n))
+
+top_types <- types %>%
+  ungroup() %>%
+  slice_max(n, n = 150)
+```
+
+```{r udpipe}
+udmodel <- udpipe_load_model(file = "english-ewt-ud-2.4-190531.udpipe")
+
+get_parse <- function(txt) {
+  parses <- txt %>%
+    udpipe(., udmodel, parallel.cores = 4) %>%
+    as_tibble() %>%
+    mutate(parse = if_else(token %in% top_types$word, token, upos),
+           parse = if_else((token == "'s" & upos == "PART"), upos, parse))
+
+  return(paste(parses$parse, collapse = " "))
+}
+
+vget_parse <- Vectorize(get_parse)
+
+get_word_parse <- function(txt) {
+  parses <- txt %>%
+    udpipe(., udmodel, parallel.cores = 4) %>%
+    as_tibble()
+  
+  return(paste(parses$token, collapse = " "))
+}
+
+contractions <- top_types %>%
+  rowwise() %>%
+  mutate(parsed = get_word_parse(word)) %>%
+  filter(word != parsed) %>%
+  arrange(desc(n))
+
+left_out = c("do", "n't", "that", "'s", "it", "I", "'m", "what", "you", "'re", "let", "he", "ca", "'ll", "there", "where", "we")
+
+top_types <- top_types %>%
+  add_row(word = left_out) %>%
+  distinct(word)
+
+```
+
+```{r parsing}
+parsed_utts <- ldp %>%
+  rowwise() %>%
+  mutate(utt_parse = vget_parse(tokens))
+
+frames <- parsed_utts %>%
+  count(utt_parse) %>%
+  arrange(desc(n))
+```
+
+```{r write-feather}
+#write_feather(parsed_utts, here("data/ldp_parsed_frames.feather"))
+#write_csv(types, here("data/ldp_types.csv"))
+#write_csv(frames, here("data/ldp_frames.csv"))
+```
+
+```{r zipf-plot}
+plot(seq_along(frames$n), unclass(frames$n))
+```
