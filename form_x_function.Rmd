@@ -13,6 +13,7 @@ library(ggthemes)
 library(feather)
 library(childesr)
 library(vroom)
+library(knitr)
 
 theme_set(theme_few(base_size = 10))
 ```
@@ -29,11 +30,6 @@ speech_acts <- read_csv(here("data/speech_acts_ldp.csv")) %>%
 ldp <- ldp %>%
   left_join(speech_acts %>% select(index, file_id, child_id, transcript_id, y_pred, meaning), 
             by = c("index", "file_id", "child_id"))
-
-speech_acts %>%
-  filter(is.na(meaning)) %>%
-  distinct(y_pred)
-# TODO: fix meaning codes for acts above
 
 n_transcripts <- ldp %>%
   select(file_id) %>%
@@ -58,8 +54,14 @@ act_freqs <- ldp %>%
   count(meaning, y_pred) %>%
   arrange(desc(n))
 
+act_freqs %>%
+  kable()
+
 top_frames <- frame_freqs %>%
   slice(1:50) 
+
+top_frames %>%
+  kable()
 
 frames <- ldp %>%
   mutate(age_bin = cut(age_months, 20, labels = FALSE),
@@ -100,6 +102,9 @@ three_plus_word_frames <- frame_freqs %>%
   filter(num_tokens > 3) %>%
   slice(1:25) 
 
+three_plus_word_frames %>%
+  kable()
+
 frames %>%
   filter(utt_parse %in% three_plus_word_frames$utt_parse) %>%
   ggplot(aes(x = age_bin, y = n, group = utt_parse, 
@@ -131,33 +136,288 @@ frames_x_acts %>%
   ggplot(aes(x=meaning, y=utt_parse, fill=log(prob))) + 
   geom_tile() +
   facet_wrap(~speaker, scales = "free") +
-  viridis::scale_fill_viridis()
+  viridis::scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.4, hjust = 1))
 
-```
-
-```{r, message = FALSE}
-mis_form_function <- read_csv(here("data/form_function_mis.csv"))
-
-mis_form_function %>%
-  ggplot(aes(age_bin, mi, color = type, group = type)) +
-  geom_line() +
-  ylab("Mutual Information (bits)") +
-  xlab("Age") +
-  ggtitle("Mutual information between form and function over development")
+frames_x_acts %>%
+  arrange(desc(n)) %>%
+  kable()
 
 ```
 
 
-```{r}
-get_anti_frame <- function(gloss, frame) {
-  split_gloss = unlist(strsplit(gloss, " "))
+```{r anti_frames}
+get_anti_frame <- function(tokens, frame) {
+  split_gloss = unlist(strsplit(tokens, " "))
   split_frame = unlist(strsplit(frame, " "))
   anti_frame <- split_gloss[!split_gloss %in% split_frame]
   return(paste(unlist(anti_frame), collapse=' '))
 }
 get_anti_frame <- Vectorize(get_anti_frame)
 
-childes_htmm_pdwz <- childes_htmm_pdwz %>%
-  mutate(anti_frame = get_anti_frame(gloss, utt_parse))
+left_out = c("don't", "that's", "it's", "I'm", "what's", "you're", "let's", "he's", "can't", "I'll", "there's", "where's", "we're", "who's")
 
+ldp <- ldp %>%
+  mutate(anti_frame = get_anti_frame(tokens, utt_parse)) %>%
+  mutate(anti_frame = str_remove(anti_frame, "^.*(don't|that's|it's|I'm|what's|you're|let's|he's|can't|I'll|there's|where's|we're|who's).*$")) %>%
+  mutate(anti_frame = trimws(anti_frame))
+
+frame_x_anti_frame <- ldp %>%
+  mutate(num_tokens = str_count(str_remove_all(utt_parse, "[,.!?']"),"\\S+"))  %>%
+  filter(num_tokens > 1, anti_frame != "") %>%
+  count(utt_parse, anti_frame) %>%
+  arrange(desc(n))
+
+frame_x_anti_frame %>%
+  slice(1:50) %>%
+  kable()
+```
+
+
+```{r common_sequences}
+sequences <- ldp %>%
+  mutate(next_utt = lead(tokens),
+         next_next_utt = lead(tokens, n = 2),
+         next_act = lead(meaning),
+         next_next_act = lead(meaning, n = 2),
+         next_frame = lead(utt_parse),
+         next_next_frame = lead(utt_parse, n = 2))
+
+utt_sequences <- sequences %>%
+  group_by(age_months, tokens, next_utt, next_next_utt) %>%
+  count() %>%
+  arrange(age_months, desc(n))
+
+utt_sequences %>%
+  slice(1:50) %>%
+  kable()
+
+act_sequences <- sequences %>%
+  group_by(age_months, meaning, next_act, next_next_act) %>%
+  count() %>%
+  arrange(age_months, desc(n))
+
+act_sequences %>%
+  slice(1:50) %>%
+  kable()
+
+frame_sequences <- sequences %>%
+  group_by(age_months, utt_parse, next_frame, next_next_frame) %>%
+  count() %>%
+  arrange(age_months, desc(n))
+
+frame_sequences %>%
+  slice(1:50) %>%
+  kable()
+
+frame_graph <- sequences %>%
+  ungroup() %>%
+  mutate(next_speaker = lead(speaker),
+         exchange_type = if_else(speaker == "CHI" & next_speaker == "ADU", "child_to_parent",
+                                 if_else(speaker == "ADU" & next_speaker == "CHI", "parent_to_child", "repeat"),
+                                 "repeat")) %>%
+  filter(exchange_type == "child_to_parent" | exchange_type == "parent_to_child") %>%
+  group_by(exchange_type, utt_parse, next_frame) %>%
+  count()
+
+common_frames <- ldp %>%
+  count(utt_parse) %>%
+  arrange(desc(n)) %>%
+  slice(1:3000)
+
+distinct_frames <- frame_graph %>%
+  ungroup() %>%
+  select(utt_parse) %>%
+  distinct(utt_parse) %>%
+  rowid_to_column() %>%
+  rename(id = rowid)
+
+parent_to_child <- frame_graph %>%
+  ungroup() %>%
+  filter(exchange_type == "parent_to_child") %>%
+  mutate(sum = sum(n), 
+         prop = n/sum) %>%
+  select(utt_parse, next_frame, prop) %>%
+  left_join(distinct_frames, by = c("utt_parse" = "utt_parse")) %>%
+  rename(current_utt_id = id) %>%
+  left_join(distinct_frames, by = c("next_frame" = "utt_parse")) %>%
+  rename(next_utt_id = id) %>%
+  filter(utt_parse %in% common_frames$utt_parse & next_frame %in% common_frames$utt_parse)
+
+parent_nodes <- distinct_frames %>%
+  filter(id %in% parent_to_child$current_utt_id | id %in% parent_to_child$next_utt_id) %>%
+  arrange(id) %>%
+  rename(Id = id, Label = utt_parse)
+
+parent_edges <- parent_to_child %>%
+  select(current_utt_id, next_utt_id, prop) %>%
+  arrange(current_utt_id, next_utt_id) %>%
+  rename(Source = current_utt_id, Target = next_utt_id, Weight = prop)
+  
+write_csv(parent_nodes, here("parent_to_child_nodes.csv"))
+write_csv(parent_edges, here("parent_to_child_edges.csv"))
+
+child_to_parent <- frame_graph %>%
+  ungroup() %>%
+  filter(exchange_type == "child_to_parent") %>%
+  mutate(sum = sum(n), 
+         prop = n/sum) %>%
+  select(utt_parse, next_frame, prop) %>%
+  left_join(distinct_frames, by = c("utt_parse" = "utt_parse")) %>%
+  rename(current_utt_id = id) %>%
+  left_join(distinct_frames, by = c("next_frame" = "utt_parse")) %>%
+  rename(next_utt_id = id) %>%
+  filter(utt_parse %in% common_frames$utt_parse & next_frame %in% common_frames$utt_parse)
+
+child_nodes <- distinct_frames %>%
+  filter(id %in% child_to_parent$current_utt_id | id %in% child_to_parent$next_utt_id) %>%
+  arrange(id) %>%
+  rename(Id = id, Label = utt_parse)
+
+child_edges <- child_to_parent %>%
+  select(current_utt_id, next_utt_id, prop) %>%
+  arrange(current_utt_id, next_utt_id) %>%
+  rename(Source = current_utt_id, Target = next_utt_id, Weight = prop)
+```
+
+```{r write-sequences}
+#write_csv(child_nodes, here("child_to_parent_nodes.csv"))
+#write_csv(child_edges, here("child_to_parent_edges.csv"))
+```
+
+
+```{r comm_acts_gephi}
+comm_act_graph <- sequences %>%
+  ungroup() %>%
+  mutate(next_speaker = lead(speaker),
+         exchange_type = if_else(speaker == "CHI" & next_speaker == "ADU", "child_to_parent",
+                                 if_else(speaker == "ADU" & next_speaker == "CHI", "parent_to_child", "repeat"),
+                                 "repeat")) %>%
+  filter(exchange_type == "child_to_parent" | exchange_type == "parent_to_child") %>%
+  rename(this_act = meaning) %>%
+  group_by(exchange_type, this_act, next_act) %>%
+  count()
+
+
+distinct_acts <- comm_act_graph %>%
+  ungroup() %>%
+  select(this_act) %>%
+  distinct(this_act) %>%
+  rowid_to_column() %>%
+  rename(id = rowid)
+
+acts_parent_to_child <- comm_act_graph %>%
+  ungroup() %>%
+  filter(exchange_type == "parent_to_child") %>%
+  mutate(sum = sum(n), 
+         prop = n/sum) %>%
+  select(this_act, next_act, prop) %>%
+  left_join(distinct_acts, by = c("this_act" = "this_act")) %>%
+  rename(current_act_id = id) %>%
+  left_join(distinct_acts, by = c("next_act" = "this_act")) %>%
+  rename(next_act_id = id) 
+
+acts_parent_nodes <- distinct_acts %>%
+  filter(id %in% acts_parent_to_child$current_act_id | id %in% acts_parent_to_child$next_act_id) %>%
+  arrange(id) %>%
+  rename(Id = id, Label = this_act)
+
+acts_parent_edges <- acts_parent_to_child %>%
+  select(current_act_id, next_act_id, prop) %>%
+  arrange(current_act_id, next_act_id) %>%
+  rename(Source = current_act_id, Target = next_act_id, Weight = prop)
+  
+write_csv(acts_parent_nodes, here("acts_parent_to_child_nodes.csv"))
+write_csv(acts_parent_edges, here("acts_parent_to_child_edges.csv"))
+
+child_to_parent <- frame_graph %>%
+  ungroup() %>%
+  filter(exchange_type == "child_to_parent") %>%
+  mutate(sum = sum(n), 
+         prop = n/sum) %>%
+  select(utt_parse, next_frame, prop) %>%
+  left_join(distinct_frames, by = c("utt_parse" = "utt_parse")) %>%
+  rename(current_utt_id = id) %>%
+  left_join(distinct_frames, by = c("next_frame" = "utt_parse")) %>%
+  rename(next_utt_id = id) %>%
+  filter(utt_parse %in% common_frames$utt_parse & next_frame %in% common_frames$utt_parse)
+
+child_nodes <- distinct_frames %>%
+  filter(id %in% child_to_parent$current_utt_id | id %in% child_to_parent$next_utt_id) %>%
+  arrange(id) %>%
+  rename(Id = id, Label = utt_parse)
+
+child_edges <- child_to_parent %>%
+  select(current_utt_id, next_utt_id, prop) %>%
+  arrange(current_utt_id, next_utt_id) %>%
+  rename(Source = current_utt_id, Target = next_utt_id, Weight = prop)
+```
+
+```{r write-child}
+#write_csv(child_nodes, here("child_to_parent_nodes.csv"))
+#write_csv(child_edges, here("child_to_parent_edges.csv"))
+```
+
+
+```{r aoas}
+comm_act_aoas <- ldp %>%
+  filter(speaker == "CHI") %>%
+  group_by(child_id, age_months, meaning) %>%
+  summarise(earliest_age = min(age_months)) %>%
+  ungroup() %>%
+  group_by(meaning) %>%
+  summarise(aoa = median(age_months))
+
+avg_comm_act_rep <- ldp %>%
+  filter(speaker == "CHI") %>%
+  group_by(child_id, age_months) %>%
+  summarise(num_comm_acts = n_distinct(meaning)) %>%
+  ungroup() %>%
+  group_by(age_months) %>%
+  summarise(avg_comm_acts = mean(num_comm_acts))
+
+comm_act_aoas <- comm_act_aoas %>%
+  left_join(avg_comm_act_rep, by = c("aoa" = "age_months"))
+
+comm_act_aoas %>%
+  ggplot(aes(x = aoa, y = avg_comm_acts, label = meaning)) + 
+  geom_text(position = position_jitter(width = 2, height = 2)) 
+
+
+
+frame_aoas <- ldp %>%
+  filter(speaker == "CHI") %>%
+  group_by(child_id, age_months, utt_parse) %>%
+  summarise(earliest_age = min(age_months)) %>%
+  ungroup() %>%
+  group_by(utt_parse) %>%
+  summarise(aoa = median(age_months))
+
+frame_rep <- ldp %>%
+  filter(speaker == "CHI") %>%
+  group_by(child_id, age_months) %>%
+  summarise(num_frames = n_distinct(utt_parse)) %>%
+  ungroup() %>%
+  group_by(age_months) %>%
+  summarise(avg_frames = mean(num_frames))
+
+child_frame_freqs <- ldp %>%
+  filter(speaker == "CHI") %>%
+  count(utt_parse) 
+
+top_child_frames <- child_frame_freqs %>%
+  arrange(desc(n)) %>%
+  slice(1:100)
+  
+frame_aoas <- frame_aoas %>%
+  left_join(frame_rep, by = c("aoa" = "age_months")) %>%
+  left_join(child_frame_freqs, by = "utt_parse")
+
+# 
+# frame_aoas %>%
+#   mutate(prop = n/sum(n)) %>%
+#   filter(utt_parse %in% top_child_frames$utt_parse) %>%
+#   ggplot(aes(x = aoa, y = avg_frames, label = utt_parse, alpha = prop)) + 
+#   geom_text(position = position_jitter(width = 3, height = 8), alpha = prop) +
+#   geom_smooth()
 ```
