@@ -1,0 +1,184 @@
+---
+title: "sequences"
+author: "Claire Bergey"
+date: "2/23/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(feather)
+library(here)
+library(ggalluvial)
+library(ggthemes)
+library(DT)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r read_data}
+corpus <- read_feather(here("data/ldp_sequences.feather"))
+corpus <- corpus %>%
+  rename(this_act = meaning,
+         this_frame = utt_parse) %>%
+  mutate(age_chunk = case_when(age_months <= 24 ~ 24,
+                               age_months > 24 & age_months <= 36 ~ 36,
+                               age_months > 36 & age_months <= 48 ~ 48,
+                               age_months > 48 ~ 58)) %>%
+  mutate(age_split = case_when(age_months <= 36 ~ 36,
+                               age_months > 36 ~ 58))
+```
+
+```{r act_sequences}
+act_sequences <- corpus %>%
+  group_by(age_split, speaker, this_act, next_act) %>%
+  count()
+
+act_freqs <- act_sequences %>%
+  group_by(this_act) %>%
+  count()
+
+frequent_acts <- act_freqs %>%
+  filter(n >= 10)
+  
+ggplot(act_sequences %>% filter(speaker == "ADU", n > 2),
+       aes(y = n, axis1 = this_act, axis2 = next_act, group = age_split)) +
+  geom_alluvium(aes(fill = this_act)) +
+  geom_stratum(color = "grey") + 
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("this act", "next act")) + 
+  theme(legend.position = "none") +
+  facet_wrap(~age_split, scales = "free")
+```
+
+Act transitions where the first speaker (left) is a parent. Faceted by broad age bin.
+
+```{r}
+ggplot(act_sequences %>% filter(speaker == "CHI", n > 2),
+       aes(y = n, axis1 = this_act, axis2 = next_act, group = age_split)) +
+  geom_alluvium(aes(fill = this_act)) +
+  geom_stratum(color = "grey") + 
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("this act", "next act")) + 
+  theme(legend.position = "none") +
+  facet_wrap(~age_split, scales = "free")
+```
+
+Act transitions where the first speaker (left) is a child. Faceted by broad age bin.
+
+```{r}
+common_acts <- c("ask yes/no question", "declarative statement", "propose action")
+
+ggplot(act_sequences %>% 
+         filter(speaker == "ADU", this_act %in% common_acts,
+                n > 50),
+       aes(y = n, axis1 = this_act, axis2 = next_act, group = age_split)) +
+  geom_alluvium(aes(fill = this_act)) +
+  geom_stratum(color = "grey") + 
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("this act", "next act")) + 
+  theme(legend.position = "none") +
+  facet_wrap(~age_split, scales = "free")
+```
+
+Transitions from just three very common acts (yes/no question, declarative statement, propose action) where the first speaker is a parent.
+
+```{r}
+ggplot(act_sequences %>% 
+         filter(speaker == "CHI", this_act %in% common_acts,
+                n > 50),
+       aes(y = n, axis1 = this_act, axis2 = next_act, group = age_split)) +
+  geom_alluvium(aes(fill = this_act)) +
+  geom_stratum(color = "grey") + 
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("this act", "next act")) + 
+  theme(legend.position = "none") +
+  facet_wrap(~age_split, scales = "free")
+```
+
+Transitions from just three very common acts (yes/no question, declarative statement, propose action) where the first speaker is a child.
+
+
+```{r}
+sequence_probs <- act_sequences %>%
+  group_by(this_act) %>%
+  count(next_act) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup()
+
+sequence_probs %>% 
+  ggplot(aes(x=next_act, y=this_act, fill=log(prob))) + 
+  geom_tile() +
+  viridis::scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+Heat map of all communicative act transitions.
+
+```{r}
+age_sequence_probs <- act_sequences %>%
+  filter(this_act %in% frequent_acts$this_act) %>%
+  group_by(age_split, this_act) %>%
+  count(next_act) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup()
+
+age_sequence_probs %>% 
+  ggplot(aes(x=next_act, y=this_act, fill=log(prob))) + 
+  geom_tile() +
+  viridis::scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_wrap(~age_split)
+```
+
+Heat map of top 40 communicative act transitions by age split.
+
+```{r}
+avg_sequences <- corpus %>%
+  group_by(this_act, next_act, next_next_act) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(avg_prob = n/sum(n))
+
+act_sequences <- corpus %>%
+  group_by(age_chunk, this_act, next_act, next_next_act) %>%
+  count() %>%
+  ungroup() %>%
+  group_by(age_chunk) %>%
+  mutate(prob = n/sum(n)) %>%
+  left_join(avg_sequences %>% select(-n), by = c("this_act", "next_act", "next_next_act"))%>%
+  mutate(distinct = prob - avg_prob)
+
+distinct_acts <- act_sequences %>%
+  group_by(age_chunk) %>%
+  arrange(desc(distinct)) %>%
+  slice(1:10) %>%
+  ungroup() 
+
+distinct_acts %>% datatable()
+```
+
+Table of most distinctive act sequences in each age group, where distinctiveness is the diff between its probability in an age group and its probability overall.
+
+```{r}
+avg_transitions <- corpus %>%
+  group_by(this_act, next_act) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(avg_prob = n/sum(n))
+
+act_transitions_distinct <- corpus %>%
+  group_by(age_chunk, this_act) %>%
+  count(next_act) %>%
+  ungroup() %>%
+  group_by(age_chunk) %>%
+  mutate(prob = n/sum(n)) %>%
+  left_join(avg_transitions %>% select(-n), by = c("this_act", "next_act"))%>%
+  mutate(distinct = prob - avg_prob)
+
+act_transitions_distinct %>% 
+  ggplot(aes(x=next_act, y=this_act, fill=distinct)) + 
+  geom_tile() +
+  viridis::scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  facet_wrap(~age_chunk)
+```

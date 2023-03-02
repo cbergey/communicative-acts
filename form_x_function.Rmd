@@ -14,8 +14,16 @@ library(feather)
 library(childesr)
 library(vroom)
 library(knitr)
+library(ggalluvial)
+library(cluster)
+library(ClusterR)
+library(skmeans)
+library(Matrix)
+library(irlba)
+library(factoextra)
 
 theme_set(theme_few(base_size = 10))
+epsilon = 0.00001
 ```
 
 ```{r read-data, message = FALSE, warning=FALSE}
@@ -117,7 +125,6 @@ frames %>%
 Top frames with more than three words over development.
 
 ```{r, message = FALSE}
-
 top_frames <- frame_freqs %>%
   slice(1:40)
 
@@ -168,9 +175,28 @@ frame_x_anti_frame <- ldp %>%
   count(utt_parse, anti_frame) %>%
   arrange(desc(n))
 
-frame_x_anti_frame %>%
-  slice(1:50) %>%
-  kable()
+frame_slot_age <- ldp %>%
+  mutate(num_tokens = str_count(str_remove_all(utt_parse, "[,.!?']"),"\\S+"))  %>%
+  filter(num_tokens > 1, anti_frame != "") %>%
+  count(age_months, utt_parse, anti_frame) %>%
+  arrange(desc(n))
+```
+
+```{r alluvial}
+ggplot(frame_x_anti_frame %>% filter(n > 100),
+       aes(y = n, axis1 = utt_parse, axis2 = anti_frame)) +
+  geom_alluvium(aes(fill = utt_parse)) +
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("Frame", "Slot")) + 
+  theme(legend.position = "none") 
+
+ggplot(frame_slot_age %>% filter(n > 20),
+       aes(y = n, axis1 = utt_parse, axis2 = anti_frame, group = age_months)) +
+  geom_alluvium(aes(fill = utt_parse)) +
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("Frame", "Slot")) + 
+  theme(legend.position = "none") +
+  facet_wrap(~age_months, scales = "free")
 ```
 
 
@@ -188,105 +214,36 @@ utt_sequences <- sequences %>%
   count() %>%
   arrange(age_months, desc(n))
 
-utt_sequences %>%
-  slice(1:50) %>%
-  kable()
-
 act_sequences <- sequences %>%
   group_by(age_months, meaning, next_act, next_next_act) %>%
   count() %>%
   arrange(age_months, desc(n))
 
-act_sequences %>%
-  slice(1:50) %>%
-  kable()
-
 frame_sequences <- sequences %>%
   group_by(age_months, utt_parse, next_frame, next_next_frame) %>%
   count() %>%
   arrange(age_months, desc(n))
-
-frame_sequences %>%
-  slice(1:50) %>%
-  kable()
-
-frame_graph <- sequences %>%
-  ungroup() %>%
-  mutate(next_speaker = lead(speaker),
-         exchange_type = if_else(speaker == "CHI" & next_speaker == "ADU", "child_to_parent",
-                                 if_else(speaker == "ADU" & next_speaker == "CHI", "parent_to_child", "repeat"),
-                                 "repeat")) %>%
-  filter(exchange_type == "child_to_parent" | exchange_type == "parent_to_child") %>%
-  group_by(exchange_type, utt_parse, next_frame) %>%
-  count()
-
-common_frames <- ldp %>%
-  count(utt_parse) %>%
-  arrange(desc(n)) %>%
-  slice(1:3000)
-
-distinct_frames <- frame_graph %>%
-  ungroup() %>%
-  select(utt_parse) %>%
-  distinct(utt_parse) %>%
-  rowid_to_column() %>%
-  rename(id = rowid)
-
-parent_to_child <- frame_graph %>%
-  ungroup() %>%
-  filter(exchange_type == "parent_to_child") %>%
-  mutate(sum = sum(n), 
-         prop = n/sum) %>%
-  select(utt_parse, next_frame, prop) %>%
-  left_join(distinct_frames, by = c("utt_parse" = "utt_parse")) %>%
-  rename(current_utt_id = id) %>%
-  left_join(distinct_frames, by = c("next_frame" = "utt_parse")) %>%
-  rename(next_utt_id = id) %>%
-  filter(utt_parse %in% common_frames$utt_parse & next_frame %in% common_frames$utt_parse)
-
-parent_nodes <- distinct_frames %>%
-  filter(id %in% parent_to_child$current_utt_id | id %in% parent_to_child$next_utt_id) %>%
-  arrange(id) %>%
-  rename(Id = id, Label = utt_parse)
-
-parent_edges <- parent_to_child %>%
-  select(current_utt_id, next_utt_id, prop) %>%
-  arrange(current_utt_id, next_utt_id) %>%
-  rename(Source = current_utt_id, Target = next_utt_id, Weight = prop)
-  
-write_csv(parent_nodes, here("parent_to_child_nodes.csv"))
-write_csv(parent_edges, here("parent_to_child_edges.csv"))
-
-child_to_parent <- frame_graph %>%
-  ungroup() %>%
-  filter(exchange_type == "child_to_parent") %>%
-  mutate(sum = sum(n), 
-         prop = n/sum) %>%
-  select(utt_parse, next_frame, prop) %>%
-  left_join(distinct_frames, by = c("utt_parse" = "utt_parse")) %>%
-  rename(current_utt_id = id) %>%
-  left_join(distinct_frames, by = c("next_frame" = "utt_parse")) %>%
-  rename(next_utt_id = id) %>%
-  filter(utt_parse %in% common_frames$utt_parse & next_frame %in% common_frames$utt_parse)
-
-child_nodes <- distinct_frames %>%
-  filter(id %in% child_to_parent$current_utt_id | id %in% child_to_parent$next_utt_id) %>%
-  arrange(id) %>%
-  rename(Id = id, Label = utt_parse)
-
-child_edges <- child_to_parent %>%
-  select(current_utt_id, next_utt_id, prop) %>%
-  arrange(current_utt_id, next_utt_id) %>%
-  rename(Source = current_utt_id, Target = next_utt_id, Weight = prop)
 ```
 
-```{r write-sequences}
-#write_csv(child_nodes, here("child_to_parent_nodes.csv"))
-#write_csv(child_edges, here("child_to_parent_edges.csv"))
+```{r alluvial}
+ggplot(frame_sequences %>% filter(n > 10),
+       aes(y = n, axis1 = utt_parse, axis2 = next_frame, axis3 = next_next_frame)) +
+  geom_alluvium(aes(fill = utt_parse)) +
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  theme(legend.position = "none") 
+
+ggplot(act_sequences %>% filter(n > 80),
+       aes(y = n, axis1 = meaning, axis2 = next_act, axis3 = next_next_act)) +
+  geom_alluvium(aes(fill = meaning)) +
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  theme(legend.position = "none") 
+
 ```
+
 
 
 ```{r comm_acts_gephi}
+
 comm_act_graph <- sequences %>%
   ungroup() %>%
   mutate(next_speaker = lead(speaker),
@@ -296,8 +253,15 @@ comm_act_graph <- sequences %>%
   filter(exchange_type == "child_to_parent" | exchange_type == "parent_to_child") %>%
   rename(this_act = meaning) %>%
   group_by(exchange_type, this_act, next_act) %>%
-  count()
-
+  count() %>%
+  ungroup() %>% 
+  group_by(exchange_type) %>%
+  complete(this_act, next_act) %>%
+  mutate(smoothed = if_else(is.na(n), epsilon, n + epsilon)) %>%
+  group_by(exchange_type, this_act) %>%
+  mutate(prob = smoothed/sum(smoothed),
+         freq = sum(smoothed)) %>%
+  ungroup()
 
 distinct_acts <- comm_act_graph %>%
   ungroup() %>%
@@ -309,9 +273,7 @@ distinct_acts <- comm_act_graph %>%
 acts_parent_to_child <- comm_act_graph %>%
   ungroup() %>%
   filter(exchange_type == "parent_to_child") %>%
-  mutate(sum = sum(n), 
-         prop = n/sum) %>%
-  select(this_act, next_act, prop) %>%
+  select(this_act, next_act, prob, freq) %>%
   left_join(distinct_acts, by = c("this_act" = "this_act")) %>%
   rename(current_act_id = id) %>%
   left_join(distinct_acts, by = c("next_act" = "this_act")) %>%
@@ -320,37 +282,42 @@ acts_parent_to_child <- comm_act_graph %>%
 acts_parent_nodes <- distinct_acts %>%
   filter(id %in% acts_parent_to_child$current_act_id | id %in% acts_parent_to_child$next_act_id) %>%
   arrange(id) %>%
-  rename(Id = id, Label = this_act)
+  left_join(acts_parent_to_child %>% distinct(this_act, freq)) %>%
+  mutate(freq = if_else(is.na(freq), epsilon, freq)) %>%
+  rename(Id = id, Label = this_act) 
 
 acts_parent_edges <- acts_parent_to_child %>%
-  select(current_act_id, next_act_id, prop) %>%
+  select(current_act_id, next_act_id, prob) %>%
   arrange(current_act_id, next_act_id) %>%
-  rename(Source = current_act_id, Target = next_act_id, Weight = prop)
+  rename(Source = current_act_id, Target = next_act_id, Weight = prob)
   
-write_csv(acts_parent_nodes, here("acts_parent_to_child_nodes.csv"))
-write_csv(acts_parent_edges, here("acts_parent_to_child_edges.csv"))
+#write_csv(acts_parent_nodes, here("acts_parent_to_child_nodes.csv"))
+#write_csv(acts_parent_edges, here("acts_parent_to_child_edges.csv"))
 
-child_to_parent <- frame_graph %>%
+acts_child_to_parent <- comm_act_graph %>%
   ungroup() %>%
   filter(exchange_type == "child_to_parent") %>%
-  mutate(sum = sum(n), 
-         prop = n/sum) %>%
-  select(utt_parse, next_frame, prop) %>%
-  left_join(distinct_frames, by = c("utt_parse" = "utt_parse")) %>%
-  rename(current_utt_id = id) %>%
-  left_join(distinct_frames, by = c("next_frame" = "utt_parse")) %>%
-  rename(next_utt_id = id) %>%
-  filter(utt_parse %in% common_frames$utt_parse & next_frame %in% common_frames$utt_parse)
+  select(this_act, next_act, prob, freq) %>%
+  left_join(distinct_acts, by = c("this_act" = "this_act")) %>%
+  rename(current_act_id = id) %>%
+  left_join(distinct_acts, by = c("next_act" = "this_act")) %>%
+  rename(next_act_id = id) 
 
-child_nodes <- distinct_frames %>%
-  filter(id %in% child_to_parent$current_utt_id | id %in% child_to_parent$next_utt_id) %>%
+acts_child_nodes <- distinct_acts %>%
+  filter(id %in% acts_child_to_parent$current_act_id | id %in% acts_child_to_parent$next_act_id) %>%
+  left_join(acts_child_to_parent %>% distinct(this_act, freq)) %>%
+  mutate(freq = if_else(is.na(freq), epsilon, freq)) %>%
   arrange(id) %>%
-  rename(Id = id, Label = utt_parse)
+  rename(Id = id, Label = this_act)
 
-child_edges <- child_to_parent %>%
-  select(current_utt_id, next_utt_id, prop) %>%
-  arrange(current_utt_id, next_utt_id) %>%
-  rename(Source = current_utt_id, Target = next_utt_id, Weight = prop)
+acts_child_edges <- acts_child_to_parent %>%
+  select(current_act_id, next_act_id, prob) %>%
+  arrange(current_act_id, next_act_id) %>%
+  rename(Source = current_act_id, Target = next_act_id, Weight = prob)
+
+#write_feather(sequences, here("data/ldp_sequences.feather"))
+#write_csv(acts_child_nodes, here("acts_child_to_parent_nodes.csv"))
+#write_csv(acts_child_edges, here("acts_child_to_parent_edges.csv"))
 ```
 
 ```{r write-child}
@@ -358,6 +325,60 @@ child_edges <- child_to_parent %>%
 #write_csv(child_edges, here("child_to_parent_edges.csv"))
 ```
 
+```{r frames}
+frames_multiple <- frame_freqs %>%
+  filter(n > 1)
+
+frame_counts <- sequences %>%
+  rename(this_frame = utt_parse) %>%
+  filter(this_frame %in% frames_multiple$utt_parse,
+         this_frame %in% frames_multiple$utt_parse) %>%
+  group_by(this_frame, next_frame) %>%
+  count() %>%
+  ungroup()
+
+frame_ids <- frame_counts %>%
+  select(this_frame) %>%
+  rbind(frame_counts %>% select(next_frame) %>% rename(this_frame = next_frame)) %>%
+  distinct(this_frame) %>%
+  rowid_to_column()
+
+frame_counts <- frame_counts %>%
+  left_join(frame_ids, by = c("this_frame" = "this_frame")) %>%
+  rename(this_frame_id = rowid) %>%
+  left_join(frame_ids, by = c("next_frame" = "this_frame")) %>%
+  rename(next_frame_id = rowid)
+  
+
+frames_matrix <- sparseMatrix(
+  i = frame_counts$this_frame_id,
+  j = frame_counts$next_frame_id, 
+  x = frame_counts$n
+)
+
+clusters <- skmeans(frames_matrix, 15, method='pclust', control=list(verbose=TRUE))
+summary(silhouette(clusters))
+plot(silhouette(clusters))
+
+regclusters <- kmeans(frames_matrix, 30)
+
+fviz_cluster(clusters)
+
+svd <- irlba(frames_matrix)
+pca <- prcomp_irlba(frames_matrix)
+
+
+pca$x %>% 
+  as.data.frame %>% View()
+  ggplot(aes(x=PC1,y=PC2)) + geom_point() 
+  
+  
+s <- irlba(frames_matrix, nu = 0, nv=10)
+mat_reduced <- as.matrix(frames_matrix %*% s$v)
+clust_kmeans <- kmeans(mat_reduced, 10)
+fviz_cluster(clust_kmeans, data = mat_reduced)
+
+```
 
 ```{r aoas}
 comm_act_aoas <- ldp %>%
