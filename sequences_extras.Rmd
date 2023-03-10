@@ -1,7 +1,7 @@
 ---
-title: "sequences"
+title: "sequences extras"
 author: "Claire Bergey"
-date: "2/23/2023"
+date: "3/10/2023"
 output: html_document
 ---
 
@@ -39,7 +39,31 @@ act_freqs <- act_sequences %>%
 
 frequent_acts <- act_freqs %>%
   filter(n >= 10)
+  
+ggplot(act_sequences %>% filter(speaker == "ADU", n > 2),
+       aes(y = n, axis1 = this_act, axis2 = next_act, group = age_split)) +
+  geom_alluvium(aes(fill = this_act)) +
+  geom_stratum(color = "grey") + 
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("this act", "next act")) + 
+  theme(legend.position = "none") +
+  facet_wrap(~age_split, scales = "free")
 ```
+
+Act transitions where the first speaker (left) is a parent. Faceted by broad age bin.
+
+```{r}
+ggplot(act_sequences %>% filter(speaker == "CHI", n > 2),
+       aes(y = n, axis1 = this_act, axis2 = next_act, group = age_split)) +
+  geom_alluvium(aes(fill = this_act)) +
+  geom_stratum(color = "grey") + 
+  geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("this act", "next act")) + 
+  theme(legend.position = "none") +
+  facet_wrap(~age_split, scales = "free")
+```
+
+Act transitions where the first speaker (left) is a child. Faceted by broad age bin.
 
 ```{r}
 common_acts <- c("ask yes/no question", "declarative statement", "propose action")
@@ -72,6 +96,7 @@ ggplot(act_sequences %>%
 ```
 
 Transitions from just three very common acts (yes/no question, declarative statement, propose action) where the first speaker is a child.
+
 
 ```{r}
 sequence_probs <- act_sequences %>%
@@ -158,55 +183,3 @@ act_transitions_distinct %>%
   facet_wrap(~age_chunk)
 ```
 
-```{r}
-acts_not_conditional <- corpus %>%
-  group_by(age_months, speaker, this_act, next_act) %>%
-  count() %>%
-  ungroup() %>%
-  group_by(age_months, speaker) %>%
-  mutate(prob = n/sum(n)) %>%
-  ungroup()
-
-acts_not_conditional %>%
-  filter(this_act == "ask yes/no question" & next_act == "declarative statement" |
-           this_act == "declarative statement" & next_act == "ask yes/no question") %>%
-  mutate(transition = if_else(this_act == "ask yes/no question", "yes/no -> declarative",
-                              "declarative -> yes/no")) %>%
-  ggplot(aes(x = age_months, y = prob, group = transition, color = transition, group = speaker)) +
-  geom_line() +
-  facet_wrap(~speaker)
-```
-
-Probabilities of a yes/no question -> declarative or a declarative -> yes/no question. These are overall probabilities of these exchanges happening, not conditional probs of the second part happening given the first. 
-
-Weirdly swapped trajectories for parents and kids?
-
-```{r}
-acts_not_conditional %>%
-  filter(this_act == "ask yes/no question" |
-           this_act == "declarative statement") %>%
-  group_by(speaker, age_months, this_act) %>%
-  mutate(total = sum(n)) %>% 
-  ungroup() %>%
-  group_by(speaker, age_months) %>%
-  mutate(total_prob = total/sum(total)) %>%
-  ungroup() %>%
-  ggplot(aes(x = age_months, y = total_prob, group = this_act, color = this_act, group = speaker)) +
-  geom_line() +
-  facet_wrap(~speaker)
-```
-
-Let's check that this isn't just explained by a parent vs. kid's probability of producing a declarative vs. yes/no question. Seems not?
-
-```{r}
-acts_not_conditional %>%
-  filter(this_act == "agree with proposition" & next_act == "declarative statement" |
-           this_act == "declarative statement" & next_act == "agree with proposition") %>%
-  mutate(transition = if_else(this_act == "agree with proposition", "agree w/proposition -> declarative",
-                              "declarative -> agree w/proposition")) %>%
-  ggplot(aes(x = age_months, y = prob, group = this_act, color = transition, group = speaker)) +
-  geom_line() +
-  facet_wrap(~speaker)
-```
-
-What about with a different type of exchange, agree with proposition -> declarative and vice versa? Don't really see the mirrored trajectories here (but it's also more noisily variable over age...).
