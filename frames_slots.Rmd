@@ -1,0 +1,106 @@
+---
+title: "frame and slot"
+author: "Claire Bergey"
+date: "4/13/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(feather)
+library(here)
+library(ggalluvial)
+library(ggthemes)
+library(DT)
+library(kableExtra)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r read_data}
+corpus <- read_feather(here("data/ldp_sequences.feather"))
+corpus <- corpus %>%
+  rename(this_act = meaning,
+         this_frame = utt_parse) %>%
+  mutate(age_chunk = case_when(age_months <= 24 ~ 24,
+                               age_months > 24 & age_months <= 36 ~ 36,
+                               age_months > 36 & age_months <= 48 ~ 48,
+                               age_months > 48 ~ 58)) %>%
+  mutate(age_split = case_when(age_months <= 36 ~ 36,
+                               age_months > 36 ~ 58))
+```
+
+```{r}
+frames_slots <- corpus %>%
+  group_by(age_chunk, speaker) %>%
+  count(this_frame, anti_frame) %>%
+  mutate(n_words = str_count(str_remove_all(this_frame, "[,.!?']"),"\\S+"))
+
+frames_slots %>%
+  filter(n_words > 2,
+         speaker == "ADU") %>%
+  group_by(age_chunk, speaker) %>%
+  arrange(desc(n)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  datatable()
+
+frames_slots %>%
+  filter(n_words > 2,
+         speaker == "CHI") %>%
+  group_by(age_chunk, speaker) %>%
+  arrange(desc(n)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  datatable()
+  
+
+```
+
+
+```{r}
+frames_slots %>%
+  filter(n_words > 2,
+         speaker == "ADU",
+         anti_frame != "") %>%
+  group_by(age_chunk, speaker) %>%
+  arrange(desc(n)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  datatable()
+
+frames_slots %>%
+  filter(n_words > 2,
+         speaker == "CHI",
+         anti_frame != "") %>%
+  group_by(age_chunk, speaker) %>%
+  arrange(desc(n)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  datatable()
+
+```
+
+```{r}
+avg_frames <- corpus %>%
+  filter(speaker == "CHI") %>%
+  count(this_frame, anti_frame) %>%
+  mutate(avg_prob = n/sum(n)) 
+
+distinctive_frames <- corpus %>%
+  filter(speaker == "CHI") %>%
+  group_by(child_id) %>%
+  count(this_frame, anti_frame) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup() %>%
+  left_join(avg_frames, by = c("this_frame", "anti_frame")) %>%
+  mutate(diff = prob - avg_prob) 
+
+distinctive_frames %>%
+  group_by(child_id) %>%
+  arrange(desc(diff)) %>%
+  slice(1:10) %>%
+  ungroup() %>%
+  datatable()
+  
+
+```
