@@ -11,12 +11,13 @@ library(tidyverse)
 library(childesr)
 library(here)
 library(patchwork)
+library(ggthemes)
 ```
 
-load csv's
+load csvs
 ```{r}
-speech_acts = read.csv(here("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/crf_speech_acts.csv"))
-act_codes = read.csv(here("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/act_codes.csv"))
+speech_acts = read.csv(here("crf_speech_acts.csv"))
+act_codes = read.csv(here("act_codes.csv"))
 ```
 
 Left join
@@ -26,10 +27,19 @@ speech_acts <- speech_acts %>%
   left_join(act_codes, by="act_code")
 ```
 
-Merging Utterances
+Form Actual Sentences
 ```{r}
-speech_acts <- speech_acts %>%
-  mutate()
+clean_speech_acts <- speech_acts %>%
+  mutate(utterance = gsub(" '", " ", tokens)) %>%
+  mutate(utterance = gsub("',", "", utterance)) %>%
+  mutate(utterance = gsub("'\\]", "", utterance)) %>%
+  mutate(utterance = gsub("\\['", "", utterance)) %>%
+  mutate(utterance = gsub(" \"", " ", utterance)) %>%
+  mutate(utterance = gsub("\",", "", utterance)) %>%
+  mutate(utterance = gsub("\"\\]", "", utterance)) %>%
+  mutate(utterance = gsub("\\[\"", "", utterance)) %>%
+  mutate(utterance = trimws(utterance)) %>%
+  mutate(act_code = if_else(is.na(act_code), "NA", act_code))
 ```
 
 Summarize Act Types (Parents and Children)
@@ -59,19 +69,7 @@ distinctive_speech_acts %>%
   labs(y = "more child                   more parent")
 ```
 
-Form Actual Sentences
-```{r}
-clean_speech_acts <- speech_acts %>%
-  mutate(utterance = gsub(" '", " ", tokens)) %>%
-  mutate(utterance = gsub("',", "", utterance)) %>%
-  mutate(utterance = gsub("'\\]", "", utterance)) %>%
-  mutate(utterance = gsub("\\['", "", utterance)) %>%
-  mutate(utterance = gsub(" \"", " ", utterance)) %>%
-  mutate(utterance = gsub("\",", "", utterance)) %>%
-  mutate(utterance = gsub("\"\\]", "", utterance)) %>%
-  mutate(utterance = gsub("\\[\"", "", utterance)) %>%
-  mutate(utterance = trimws(utterance))
-```
+
 
 
 Over/Under 36 months
@@ -277,6 +275,77 @@ filtered_rows_em <- clean_speech_acts[clean_speech_acts$act_code == "EM", ]
 selected_columns_em <- filtered_rows_em[, c("utterance", "speaker")]
 sampled_data_em <- selected_columns_em[sample(nrow(selected_columns_cl), 5), ]
 print(sampled_data_em)
+
+```
+
+
+```{r rep-plot}
+common_acts <- clean_speech_acts %>%
+  count(act_code, meaning) %>%
+  arrange(desc(n)) %>%
+  slice(1:15)
+
+labels <- c("agree to act", "agree with proposition", "answer affirmative", "answer calls", "ask wh- question", "ask wh- question", "ask yes/no question", "ask yes/no question", "declarative statement", "declarative statement", "mark event", "mark event", "no clear function", "prohibition", "propose action", "propose action", "repetition", "state intent", "answer wh- question", "question about other's wishes")
+
+branching_annotations <- tibble(meaning = 1:20,
+                                meaning_name = labels,
+                                age_bin = c(36, 32, 36, 46, 44, 48, 50, 44, 36,
+                                            36, 20, 50, 20, 50, 38, 24, 18, 36, 
+                                            38, 40),
+                                n = c(.99, .95, .925, .9, .86, .835, .775, 
+                                      .7, .6, .45, .30, .39,
+                                      .3, .22, .24, .14, .12, .10, .04, .02),
+                                speaker_role = c("Child","Parent","Child","Parent","Parent","Child","Child","Parent","Child","Parent","Parent","Child","Child","Parent","Child","Parent","Child","Child","Child","Parent"))
+  
+branching <- clean_speech_acts %>%
+  filter(act_code %in% common_acts$act_code) %>%
+  mutate(age_months = as.numeric(age_months),
+         age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (54/20)*age_bin + 6,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  group_by(age_bin, speaker_role) %>%
+  count(meaning) 
+
+
+branching_plot <- ggplot(branching, aes(x = age_bin, y = n, group = meaning, 
+             fill = as.factor(meaning))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role) +
+  theme_few(base_size = 10) +
+ theme(legend.position = "none") + 
+  geom_text(aes(label = meaning_name), size = 2.5, color = "white", hjust = 1,
+            fontface = "bold",data = branching_annotations) +
+  scale_x_continuous(breaks = c(12,24,36,48,60)) +
+  labs(x = "Age (months)", y = "Communicative act proportion") 
+
+ggsave(branching_plot, filename = "plots/branching_plot.png",  width = 12, height = 6, units = "in", dpi = 300, bg = "transparent")
+
+
+```
+
+```{r repair}
+repair <- clean_speech_acts %>%
+  mutate(age_months = as.numeric(age_months),
+         age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (54/20)*age_bin + 6,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  group_by(age_bin, speaker_role) %>%
+  count(meaning) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup() %>%
+  filter(meaning %in% c(" request repeat"))
+
+repair %>%
+  ggplot(aes(x = age_bin, y = prob, group = meaning, 
+             color = as.factor(meaning))) +
+               geom_line() +
+  facet_wrap(~speaker_role) +
+  theme_few(base_size = 10) +
+ theme(legend.position = "none") + 
+  scale_x_continuous(breaks = c(12,24,36,48,60)) +
+  labs(x = "Age (months)", y = "Communicative act proportion") 
 
 ```
 
