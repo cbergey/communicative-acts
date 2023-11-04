@@ -1,0 +1,256 @@
+---
+title: "LDP Analyses on CHILDES"
+author: "misha !"
+date: "2023-09-19"
+output: html_document
+---
+
+Load libraries
+```{r}
+library(tidyverse)
+library(childesr)
+library(here)
+library(patchwork)
+library(entropy)
+library(networkD3)
+library(igraph)
+library(reshape2)
+library(Gmisc)
+library(grid)
+```
+
+load csv's
+```{r}
+speech_acts = read.csv(here("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/crf_speech_acts.csv"))
+act_codes = read.csv(here("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/act_codes.csv"))
+```
+
+Left join
+```{r}
+speech_acts <- speech_acts %>%
+  rename(act_code = y_pred) %>%
+  left_join(act_codes, by="act_code")
+```
+
+Merging Utterances
+```{r}
+speech_acts <- speech_acts %>%
+  mutate()
+```
+
+Summarize Act Types (Parents and Children)
+```{r}
+act_summary <- speech_acts %>%
+  group_by(speaker) %>%
+  count(meaning) %>%
+  mutate(prop = n/sum(n)) %>%
+  ungroup()
+
+act_summary %>%
+  ggplot(aes(x= meaning, y= prop)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 315)) +
+  facet_wrap(~speaker)
+
+#see difference in prop b/n parents and children
+distinctive_speech_acts <- act_summary %>%
+  select(-n) %>%
+  pivot_wider(names_from = speaker, values_from = prop) %>%
+  mutate(prop_difference = ADU - CHI)
+
+distinctive_speech_acts %>%
+  filter(prop_difference > .025  | prop_difference < -.025) %>%
+  ggplot(aes(x= meaning, y= prop_difference)) +
+  geom_col() +
+  labs(y = "more child                   more parent")
+```
+
+Child-Centric Analyses
+```{r}
+# Levels of Entropy at Different Ages
+# Custom function to calculate entropy
+calculate_entropy <- function(x) {
+  if (length(unique(x)) == 1) {
+    return(0)
+  }
+  return(entropy(table(x)))
+}
+
+# Calculate entropy for speech acts
+entropy_data1 <- speech_acts %>%
+  group_by(speaker, age_months) %>%
+  summarise(Entropy = calculate_entropy(act_code)) %>%
+  ungroup()
+
+# Normalize the entropy values to the range [0, 1]
+entropy_data1 <- entropy_data1 %>%
+  group_by(speaker) %>%
+  mutate(Entropy = (Entropy - min(Entropy)) / (max(Entropy) - min(Entropy))) %>%
+  ungroup()
+
+# Create a scatterplot of CHI and ADU speech act entropy at different ages
+ggplot(entropy_data1, aes(x = age_months, y = Entropy, color = Entropy)) +
+  geom_point() +
+  labs(title = "CHI and ADU CA Entropy by Age", x = "Age (months)", y = "Entropy of Speech Acts", color = "Entropy") +
+  scale_color_gradient2(mid = "lightblue", high = "darkred") +
+  geom_smooth(method = "lm", se = TRUE, color = "salmon") +
+  facet_wrap(~speaker, ncol = 2, scales = "free_y")
+  
+  
+  
+  
+#Average Utterances by Age
+
+# Calculate the average number of speech acts for each month and speaker
+average_speech_acts <- speech_acts %>%
+  group_by(speaker, age_months, act_code) %>%
+  summarise(Avg_Speech_Acts = mean(n())) %>%
+  ungroup()
+
+# Create a scatterplot of the average number of speech acts
+  ggplot(average_speech_acts_filtered, aes(x = age_months, y = Avg_Speech_Acts, color = Avg_Speech_Acts)) +
+  geom_point(size = 2.5) +
+  labs(title = "Total Utterances by Age", x = "Age (months)", y = "Average Speech Acts", color = "Avg Speech Acts") +
+  scale_color_gradient2(mid = "salmon", high = "darkblue") +
+  facet_wrap(~speaker, ncol = 2, scales = "free_y") +
+  ylim(100, 10000)
+  
+  
+  
+#Average number of Different Speech Acts by Age
+
+# Calculate the average number of unique act codes for each month and speaker
+average_act_codes <- speech_acts %>%
+  group_by(speaker, age_months) %>%
+  summarise(Avg_Unique_Act_Codes = mean(n_distinct(act_code))) %>%
+  ungroup()
+
+# Create a scatterplot of the average number of unique act codes
+ggplot(average_act_codes, aes(x = age_months, y = Avg_Unique_Act_Codes, color = Avg_Unique_Act_Codes)) +
+  geom_point(size = 2) +
+  labs(title = "Average No. of Different CA by Age", x = "Age (months)", y = "Average Unique Act Codes", color = "Average Unique CA") +
+  scale_color_gradient2(mid = "white", high = "darkblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "salmon") +
+  facet_wrap(~speaker, ncol = 2, scales = "free_y")
+```
+
+
+
+Parent-Child Dyadic Analyses
+```{r}
+# Relationship in Entropy of CA between ADU and CHI
+
+# Calculate entropy for CHI (children)
+chi_entropy <- speech_acts %>%
+  filter(speaker == "CHI") %>%
+  group_by(child_id, age_months) %>%
+  summarise(CHI_Entropy = entropy(table(act_code))) %>%
+  ungroup()
+
+# Calculate entropy for ADU (adults)
+adu_entropy <- speech_acts %>%
+  filter(speaker == "ADU") %>%
+  group_by(child_id, age_months) %>%
+  summarise(CHI_Entropy = entropy(table(act_code, age_months))) %>%
+  ungroup()
+
+# Merge CHI and ADU entropy data by child_id and age_months
+entropy_data2 <- merge(chi_entropy, adu_entropy, by = c("child_id", "age_months"), all = TRUE)
+
+# Normalize the entropy values to the range [0, 1]
+entropy_data2 <- entropy_data2 %>%
+  mutate(CHI_Entropy.x = (CHI_Entropy.x - min(CHI_Entropy.x)) / (max(CHI_Entropy.x) - min(CHI_Entropy.x))) %>%
+  mutate(CHI_Entropy.y = (CHI_Entropy.y - min(CHI_Entropy.y)) / (max(CHI_Entropy.y) - min(CHI_Entropy.y)))
+
+entropy_data2 <- entropy_data2 %>%
+  rename(ADU_Entropy = CHI_Entropy.y) %>%
+  rename(CHI_Entropy = CHI_Entropy.x)
+
+# Create a scatterplot
+ggplot(entropy_data2, aes(x = CHI_Entropy, y = ADU_Entropy, color = age_months)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "salmon") +
+  scale_color_gradient2(mid = "white", high = "darkblue") +
+  labs(title = "Relationship Between ADU and CHI CA Entropy", x = "Child Entropy", y = "Adult Entropy", color = "Age (months)")
+
+
+
+
+# Probability Matrix to Predict the Next CA
+
+# Calculate transition probabilities for all pairs of act_code values
+transition_probs <- speech_acts %>%
+  filter(speaker == "CHI") %>%
+  group_by(act_code, next_act = lead(act_code)) %>%
+  summarise(probability = n() / nrow(.)) %>%
+  ungroup()
+
+# Create a data frame with act_code, next_act, and probability
+transition_prob_data <- transition_probs %>%
+  rename(act_code = act_code, next_act = next_act, probability = probability)
+
+# Create a transition probability matrix
+transition_matrix <- dcast(transition_probs, act_code ~ next_act, value.var = "probability", fill = 0)
+
+# Filter combinations with probability above 0.05
+filtered_transition_probs <- transition_probs %>%
+  filter(probability > 0.005)
+
+# Create a transition probability matrix
+transition_matrix_filtered <- dcast(filtered_transition_probs, act_code ~ next_act, value.var = "probability", fill = 0)
+
+# Reshape the matrix for plotting
+transition_matrix_melted <- melt(transition_matrix, id.vars = "act_code")
+
+# Reshape the matrix for plotting
+transition_matrix_melted_filtered <- melt(transition_matrix_filtered, id.vars = "act_code")
+
+# Plot the heatmap
+ggplot(data = transition_matrix_melted_filtered, aes(x = act_code, y = variable, fill = value)) +
+  geom_tile(color = "lightgrey",
+            lwd = 1.5,
+            linetype = 1) +
+  coord_fixed() +
+  scale_fill_gradient(low = "white", high = "darkred") +
+  labs(
+    x = "Next Act",
+    y = "Current Act",
+    fill = "Probability of Occurance"
+  ) +
+  labs(title = "Probability of Next CA Given Current CA") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+
+
+
+#Visualizing a Transition Matrix of CA (DON'T DO WITHOUT FILTERED CA SET)
+
+
+# Extract the act codes from the first column of your transition matrix
+labels <- transition_matrix_filtered$act_code
+
+# Create the box_txt data frame with labels for both sets of boxes (15x2)
+transition_act_labels <- data.frame(
+  Label = rep(labels),
+  Category = rep(labels)
+)
+
+# Remove the first three columns from the transition matrix
+transition_matrix_filtered_square <- transition_matrix_filtered[, -c(1:2)]
+
+transitionPlot(
+  transition_matrix_filtered_square,
+  box_txt = transition_act_labels,
+  type_of_arrow = "simple",
+  fill_start_box = "darkgreen",
+  fill_end_box = "salmon",
+  min_lwd = unit(.02, "mm"),
+  max_lwd = unit(6, "mm"),
+  overlap_add_width = unit(1, "mm")
+)
+```
+
