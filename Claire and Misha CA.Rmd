@@ -6,6 +6,7 @@ output: html_document
 ---
 
 Load libraries
+
 ```{r}
 library(tidyverse)
 library(childesr)
@@ -15,12 +16,14 @@ library(ggthemes)
 ```
 
 load csvs
+
 ```{r}
 speech_acts = read.csv(here("crf_speech_acts.csv"))
 act_codes = read.csv(here("act_codes.csv"))
 ```
 
 Left join
+
 ```{r}
 speech_acts <- speech_acts %>%
   rename(act_code = y_pred) %>%
@@ -28,6 +31,7 @@ speech_acts <- speech_acts %>%
 ```
 
 Form Actual Sentences
+
 ```{r}
 clean_speech_acts <- speech_acts %>%
   mutate(utterance = gsub(" '", " ", tokens)) %>%
@@ -43,6 +47,7 @@ clean_speech_acts <- speech_acts %>%
 ```
 
 Summarize Act Types (Parents and Children)
+
 ```{r}
 act_summary <- speech_acts %>%
   group_by(speaker) %>%
@@ -69,10 +74,8 @@ distinctive_speech_acts %>%
   labs(y = "more child                   more parent")
 ```
 
-
-
-
 Over/Under 36 months
+
 ```{r}
 # Create an act_summary data frame for under 36 month olds
 act_summary_under_36 <- speech_acts %>%
@@ -130,6 +133,7 @@ print(plot_by_age)
 ```
 
 Filtered DF
+
 ```{r}
 filtered_rows_cl <- clean_speech_acts[clean_speech_acts$act_code == "CL", ]
 selected_columns_cl <- filtered_rows_cl[, c("utterance", "speaker")]
@@ -278,7 +282,6 @@ print(sampled_data_em)
 
 ```
 
-
 ```{r rep-plot}
 common_acts <- clean_speech_acts %>%
   count(act_code, meaning) %>%
@@ -349,3 +352,38 @@ repair %>%
 
 ```
 
+```{r babble}
+babble_list <- c("ba", "ga", "da", "ma", "pa", "la", "na", "ka", "wa", "goo", "gaa", "doo", "moo", "poo", "loo", "noo", "koo", "woo", "baba", "gaga", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "lala", "nana", "kaka", "wawa", "gugu", "mimi", "pupu", "lulu", "nunu", "kuku", "wuwu", "bababa", "gagaga", "dadada","mamama", "papapa", "lalala", "nanana", "kakaka", "wawawa", "gugugu", "mimimi", "pupupu", "lululu","nununu", "kukuku", "wuwuwu", "a a", "uh", "uh uh", "da", "tu", "uhhuh", "uhhuhuh", "oh")
+
+babble_data <- clean_speech_acts %>%
+  filter(utterance %in% babble_list)
+
+babble_data <- babble_data %>%
+  mutate(
+    age_months = as.numeric(age_months),
+    age_bin = cut(age_months, 20, labels = FALSE),
+    age_bin = (54/20) * age_bin + 6,
+    speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+    speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  mutate(utterance = ifelse(utterance %in% babble_list, "babble", utterance))
+
+# Calculate the total n for the meaning column in clean_speech_acts
+total_n_meaning <- summarise(clean_speech_acts, total_n_meaning = n())
+
+# Calculate the babble_summary
+babble_summary <- babble_data %>%
+  group_by(age_bin, speaker_role, utterance) %>%
+  count() %>%
+  left_join(total_n_meaning, by = character()) %>%
+  mutate(prob = n / total_n_meaning) %>%
+  ungroup() %>%
+  select(-total_n_meaning)
+
+ggplot(babble_summary, aes(x = age_bin, y = prob, group = utterance, color = as.factor(utterance))) +
+  geom_line() +
+  facet_wrap(~speaker_role) +
+  theme_few(base_size = 10) +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = c(12, 24, 36, 48, 60)) +
+  labs(title = "Babbling as a Function of Time", x = "Age (months)", y = "Babble Proportion")
+```
