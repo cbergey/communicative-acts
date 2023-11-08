@@ -355,35 +355,27 @@ repair %>%
 ```{r babble}
 babble_list <- c("ba", "ga", "da", "ma", "pa", "la", "na", "ka", "wa", "goo", "gaa", "doo", "moo", "poo", "loo", "noo", "koo", "woo", "baba", "gaga", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "lala", "nana", "kaka", "wawa", "gugu", "mimi", "pupu", "lulu", "nunu", "kuku", "wuwu", "bababa", "gagaga", "dadada","mamama", "papapa", "lalala", "nanana", "kakaka", "wawawa", "gugugu", "mimimi", "pupupu", "lululu","nununu", "kukuku", "wuwuwu", "a a", "uh", "uh uh", "da", "tu", "uhhuh", "uhhuhuh", "oh")
 
-babble_data <- clean_speech_acts %>%
-  filter(utterance %in% babble_list)
 
-babble_data <- babble_data %>%
-  mutate(
-    age_months = as.numeric(age_months),
-    age_bin = cut(age_months, 20, labels = FALSE),
-    age_bin = (54/20) * age_bin + 6,
-    speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
-    speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
-  mutate(utterance = ifelse(utterance %in% babble_list, "babble", utterance))
 
-# Calculate the total n for the meaning column in clean_speech_acts
-total_n_meaning <- summarise(clean_speech_acts, total_n_meaning = n())
 
-# Calculate the babble_summary
-babble_summary <- babble_data %>%
-  group_by(age_bin, speaker_role, utterance) %>%
-  count() %>%
-  left_join(total_n_meaning, by = character()) %>%
-  mutate(prob = n / total_n_meaning) %>%
+Babble <- clean_speech_acts %>%
+  mutate(age_months = as.numeric(age_months),
+         age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (54/20)*age_bin + 6,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  group_by(age_bin, speaker_role) %>%
+  count(meaning) %>%
+  mutate(prob = n/sum(n)) %>%
   ungroup() %>%
-  select(-total_n_meaning)
+  filter(meaning %in% c(" no clear function"))
 
-ggplot(babble_summary, aes(x = age_bin, y = prob, group = utterance, color = as.factor(utterance))) +
-  geom_line() +
+Babble %>%
+  ggplot(aes(x = age_bin, y = prob, group = meaning, 
+             color = as.factor(meaning))) +
+               geom_line() +
   facet_wrap(~speaker_role) +
-  theme_few(base_size = 10) +
-  theme(legend.position = "none") +
-  scale_x_continuous(breaks = c(12, 24, 36, 48, 60)) +
-  labs(title = "Babbling as a Function of Time", x = "Age (months)", y = "Babble Proportion")
+ theme(legend.position = "none") + 
+  scale_x_continuous(breaks = c(12,24,36,48,60)) +
+  labs(x = "Age (months)", y = "Communicative act proportion", title = "No clear function (babbling?) over time")
 ```
