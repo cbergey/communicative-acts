@@ -13,6 +13,7 @@ library(here)
 library(patchwork)
 library(ggthemes)
 library(ggplot2)
+library(dplyr)
 ```
 
 Load Speech Acts
@@ -36,11 +37,11 @@ Rainbow Plot
 common_acts <- ldp_speech_acts %>%
   count(act_code, meaning) %>%
   arrange(desc(n)) %>%
-  slice(1:60)
+  slice(1:15)
 
 labels <- c("agree to act", "agree with proposition", "answer affirmative", "answer calls", "ask wh- question", "ask wh- question", "ask yes/no question", "ask yes/no question", "declarative statement", "declarative statement", "mark event", "mark event", "no clear function", "prohibition", "propose action", "propose action", "repetition", "state intent", "answer wh- question", "question about other's wishes")
 
-branching_annotations <- tibble(meaning = 1:20,
+branching_annotations <- tibble(meaning = 1:15,
                                 meaning_name = labels,
                                 age_bin = c(36, 32, 36, 46, 44, 48, 50, 44, 36,
                                             36, 20, 53, 22, 50, 38, 24, 21, 36, 
@@ -57,7 +58,7 @@ branching <- ldp_speech_acts %>%
          age_bin = (44/20)*age_bin + 14,
          speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
          speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
-  group_by(age_bin, speaker_role) %>%
+  group_by(age_bin, speaker_role, child_id, age_months) %>%
   count(meaning) 
 
 
@@ -76,6 +77,31 @@ ggplot(branching, aes(x = age_bin, y = n, group = meaning,
         strip.text.x=element_text(size=15,face="bold"))
 
 #ggsave(branching_plot, filename = "plots/branching_plot.png",  width = 9, height = 5, units = "in", dpi = 300, bg = "transparent")
-```
+
+
+
+
+
+
+
+#SAMPLED
+
+# Group by child_id and count the unique age_bin values for each child
+child_age_counts <- branching %>%
+  group_by(child_id) %>%
+  summarize(unique_age_bins = n_distinct(age_bin))
+
+# Filter the data for child IDs 22, 24, and 25
+branching_subset <- branching %>% filter(child_id %in% c(22, 24, 25))
+
+# Plot the data for the specified child IDs
+ggplot(branching_subset, aes(x = age_months, y = n, group = meaning, fill = as.factor(meaning))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role + as.factor(child_id)) +
+  theme_few(base_size = 10) +
+  labs(x = "Age (months)", y = "Communicative act proportion") +
+  theme(axis.title.x = element_text(size = 15, face = "bold"),
+        axis.title.y = element_text(size = 15, face = "bold"),
+        strip.text.x = element_text(size = 15, face = "bold"))
 ```
 
