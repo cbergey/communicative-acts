@@ -1,0 +1,387 @@
+---
+title: "Claire and Misha"
+author: "misha !"
+date: "2023-09-19"
+output: html_document
+---
+
+Load libraries
+```{r}
+library(tidyverse)
+library(childesr)
+library(here)
+library(patchwork)
+```
+
+load csv's
+```{r}
+speech_acts = read.csv("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/crf_speech_acts.csv")
+act_codes = read.csv("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/act_codes.csv")
+act_codes = read.csv("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/act_codes.csv")
+```
+
+Left join
+```{r}
+speech_acts <- speech_acts %>%
+  rename(act_code = y_pred) %>%
+  left_join(act_codes, by="act_code")
+```
+
+Merging Utterances
+```{r}
+speech_acts <- speech_acts %>%
+  mutate()
+```
+
+Summarize Act Types (Parents and Children)
+```{r}
+act_summary <- speech_acts %>%
+  group_by(speaker) %>%
+  count(meaning) %>%
+  mutate(prop = n/sum(n)) %>%
+  ungroup()
+
+act_summary %>%
+  ggplot(aes(x= meaning, y= prop)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 315)) +
+  facet_wrap(~speaker)
+
+#see difference in prop b/n parents and children
+distinctive_speech_acts <- act_summary %>%
+  select(-n) %>%
+  pivot_wider(names_from = speaker, values_from = prop) %>%
+  mutate(prop_difference = ADU - CHI)
+
+distinctive_speech_acts %>%
+  filter(prop_difference > .025  | prop_difference < -.025) %>%
+  ggplot(aes(x= meaning, y= prop_difference)) +
+  geom_col() +
+  labs(y = "more child                   more parent")
+```
+
+Form Actual Sentences
+```{r}
+clean_speech_acts <- speech_acts %>%
+  mutate(utterance = gsub(" '", " ", tokens)) %>%
+  mutate(utterance = gsub("',", "", utterance)) %>%
+  mutate(utterance = gsub("'\\]", "", utterance)) %>%
+  mutate(utterance = gsub("\\['", "", utterance)) %>%
+  mutate(utterance = gsub(" \"", " ", utterance)) %>%
+  mutate(utterance = gsub("\",", "", utterance)) %>%
+  mutate(utterance = gsub("\"\\]", "", utterance)) %>%
+  mutate(utterance = gsub("\\[\"", "", utterance)) %>%
+  mutate(utterance = gsub(" [.!]", "", utterance)) %>%
+  mutate(utterance = trimws(utterance))
+```
+
+
+Over/Under 36 months
+```{r}
+# Create an act_summary data frame for under 36 month olds
+act_summary_under_36 <- speech_acts %>%
+  filter(age_months < 36) %>%
+  group_by(speaker) %>%
+  count(meaning) %>%
+  mutate(prop = n/sum(n)) %>%
+  ungroup()
+
+# Create an act_summary data frame for over 36 month olds
+act_summary_over_36 <- speech_acts %>%
+  filter(age_months >= 36) %>%
+  group_by(speaker) %>%
+  count(meaning) %>%
+  mutate(prop = n/sum(n)) %>%
+  ungroup()
+
+distinctive_speech_acts_under_36 <- act_summary_under_36 %>%
+  select(-n) %>%
+  pivot_wider(names_from = speaker, values_from = prop) %>%
+  mutate(prop_difference = ADU - CHI)
+
+distinctive_speech_acts_over_36 <- act_summary_over_36 %>%
+  select(-n) %>%
+  pivot_wider(names_from = speaker, values_from = prop) %>%
+  mutate(prop_difference = ADU - CHI)
+
+
+
+# Combine the two data frames
+combined_data <- bind_rows(
+  distinctive_speech_acts_under_36 %>% mutate(age_group = "Under 36mo"),
+  distinctive_speech_acts_over_36 %>% mutate(age_group = "Over 36mo")
+)
+
+# Create a new column 'distinctive' to indicate whether a speech act is distinctive
+combined_data <- combined_data %>%
+  mutate(distinctive = abs(prop_difference) > 0.05)
+
+plot_by_age <- combined_data %>%
+  filter(distinctive) %>%
+  filter(age_group %in% c("Under 36mo", "Over 36mo")) %>%
+  ggplot(aes(x = meaning, y = prop_difference, fill = age_group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~age_group, ncol = 1) +
+  labs(
+    title = "Distinctive Speech Acts",
+    x = "Meaning",
+    y = "Proportion Difference",
+    fill = "Age Group"
+  ) +
+  theme_minimal()
+
+print(plot_by_age)
+```
+
+Filtered DF
+```{r}
+filtered_rows_cl <- clean_speech_acts[clean_speech_acts$act_code == "CL", ]
+selected_columns_cl <- filtered_rows_cl[, c("utterance", "speaker")]
+sampled_data_cl <- selected_columns_cl[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_cl)
+
+filtered_rows_to <- clean_speech_acts[clean_speech_acts$act_code == "TO", ]
+selected_columns_to <- filtered_rows_to[, c("utterance", "speaker")]
+sampled_data_to <- selected_columns_to[sample(nrow(selected_columns_to), 5), ]
+print(sampled_data_to)
+
+filtered_rows_pr <- clean_speech_acts[clean_speech_acts$act_code == "PR", ]
+selected_columns_pr <- filtered_rows_pr[, c("utterance", "speaker")]
+sampled_data_pr <- selected_columns_pr[sample(nrow(selected_columns_pr), 5), ]
+print(sampled_data_pr)
+
+filtered_rows_mk <- clean_speech_acts[clean_speech_acts$act_code == "MK", ]
+selected_columns_mk <- filtered_rows_mk[, c("utterance", "speaker")]
+sampled_data_mk <- selected_columns_mk[sample(nrow(selected_columns_mk), 5), ]
+print(sampled_data_mk)
+
+filtered_rows_pf <- clean_speech_acts[clean_speech_acts$act_code == "PF", ]
+selected_columns_pf <- filtered_rows_pf[, c("utterance", "speaker")]
+sampled_data_pf <- selected_columns_pf[sample(nrow(selected_columns_pf), 5), ]
+print(sampled_data_pf)
+
+filtered_rows_sa <- clean_speech_acts[clean_speech_acts$act_code == "SA", ]
+selected_columns_sa <- filtered_rows_sa[, c("utterance", "speaker")]
+sampled_data_sa <- selected_columns_sa[sample(nrow(selected_columns_sa), 5), ]
+print(sampled_data_sa)
+
+filtered_rows_rp <- clean_speech_acts[clean_speech_acts$act_code == "RP", ]
+selected_columns_rp <- filtered_rows_rp[, c("utterance", "speaker")]
+sampled_data_rp <- selected_columns_rp[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_rp)
+
+filtered_rows_ad <- clean_speech_acts[clean_speech_acts$act_code == "AD", ]
+selected_columns_ad <- filtered_rows_ad[, c("utterance", "speaker")]
+sampled_data_ad <- selected_columns_ad[sample(nrow(selected_columns_ad), 5), ]
+print(sampled_data_ad)
+
+filtered_rows_cs <- clean_speech_acts[clean_speech_acts$act_code == "CS", ]
+selected_columns_cs <- filtered_rows_cs[, c("utterance", "speaker")]
+sampled_data_cs <- selected_columns_cs[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_cs)
+
+filtered_rows_ac <- clean_speech_acts[clean_speech_acts$act_code == "AC", ]
+selected_columns_ac <- filtered_rows_ac[, c("utterance", "speaker")]
+sampled_data_ac <- selected_columns_ac[sample(nrow(selected_columns_ac), 5), ]
+print(sampled_data_ac)
+
+filtered_rows_yq <- clean_speech_acts[clean_speech_acts$act_code == "YQ", ]
+selected_columns_yq <- filtered_rows_yq[, c("utterance", "speaker")]
+sampled_data_yq <- selected_columns_yq[sample(nrow(selected_columns_yq), 5), ]
+print(sampled_data_yq)
+
+filtered_rows_ap <- clean_speech_acts[clean_speech_acts$act_code == "AP", ]
+selected_columns_ap <- filtered_rows_ap[, c("utterance", "speaker")]
+sampled_data_ap <- selected_columns_ap[sample(nrow(selected_columns_ap), 5), ]
+print(sampled_data_ap)
+
+filtered_rows_an <- clean_speech_acts[clean_speech_acts$act_code == "AN", ]
+selected_columns_an <- filtered_rows_an[, c("utterance", "speaker")]
+sampled_data_an <- selected_columns_an[sample(nrow(selected_columns_an), 5), ]
+print(sampled_data_an)
+
+filtered_rows_dw <- clean_speech_acts[clean_speech_acts$act_code == "DW", ]
+selected_columns_dw <- filtered_rows_dw[, c("utterance", "speaker")]
+sampled_data_dw <- selected_columns_dw[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_dw)
+
+filtered_rows_rq <- clean_speech_acts[clean_speech_acts$act_code == "RQ", ]
+selected_columns_rq <- filtered_rows_rq[, c("utterance", "speaker")]
+sampled_data_rq <- selected_columns_rq[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_rq)
+
+filtered_rows_ya <- clean_speech_acts[clean_speech_acts$act_code == "YA", ]
+selected_columns_ya <- filtered_rows_ya[, c("utterance", "speaker")]
+sampled_data_ya <- selected_columns_ya[sample(nrow(selected_columns_ya), 5), ]
+print(sampled_data_ya)
+
+filtered_rows_cr <- clean_speech_acts[clean_speech_acts$act_code == "CR", ]
+selected_columns_cr <- filtered_rows_cr[, c("utterance", "speaker")]
+sampled_data_cr <- selected_columns_cr[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_cr)
+
+filtered_rows_pa <- clean_speech_acts[clean_speech_acts$act_code == "PA", ]
+selected_columns_pa <- filtered_rows_pa[, c("utterance", "speaker")]
+sampled_data_pa <- selected_columns_pa[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_pa)
+
+filtered_rows_pm <- clean_speech_acts[clean_speech_acts$act_code == "PM", ]
+selected_columns_pm <- filtered_rows_pm[, c("utterance", "speaker")]
+sampled_data_pm <- selected_columns_pm[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_pm)
+
+filtered_rows_yd <- clean_speech_acts[clean_speech_acts$act_code == "YD", ]
+selected_columns_yd <- filtered_rows_yd[, c("utterance", "speaker")]
+sampled_data_yd <- selected_columns_yd[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_yd)
+
+filtered_rows_xa <- clean_speech_acts[clean_speech_acts$act_code == "XA", ]
+selected_columns_xa <- filtered_rows_xa[, c("utterance", "speaker")]
+sampled_data_xa <- selected_columns_xa[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_xa)
+
+filtered_rows_ss <- clean_speech_acts[clean_speech_acts$act_code == "SS", ]
+selected_columns_ss <- filtered_rows_ss[, c("utterance", "speaker")]
+sampled_data_ss <- selected_columns_ss[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_ss)
+
+filtered_rows_et <- clean_speech_acts[clean_speech_acts$act_code == "ET", ]
+selected_columns_et <- filtered_rows_et[, c("utterance", "speaker")]
+sampled_data_et <- selected_columns_et[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_et)
+
+filtered_rows_ei <- clean_speech_acts[clean_speech_acts$act_code == "EI", ]
+selected_columns_ei <- filtered_rows_ei[, c("utterance", "speaker")]
+sampled_data_ei <- selected_columns_ei[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_ei)
+
+filtered_rows_gr <- clean_speech_acts[clean_speech_acts$act_code == "GR", ]
+selected_columns_gr <- filtered_rows_gr[, c("utterance", "speaker")]
+sampled_data_gr <- selected_columns_gr[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_gr)
+
+filtered_rows_ta <- clean_speech_acts[clean_speech_acts$act_code == "TA", ]
+selected_columns_ta <- filtered_rows_ta[, c("utterance", "speaker")]
+sampled_data_ta <- selected_columns_ta[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_ta)
+
+filtered_rows_fp <- clean_speech_acts[clean_speech_acts$act_code == "FP", ]
+selected_columns_fp <- filtered_rows_fp[, c("utterance", "speaker")]
+sampled_data_fp <- selected_columns_fp[sample(nrow(selected_columns_fp), 5), ]
+print(sampled_data_fp)
+
+filtered_rows_ed <- clean_speech_acts[clean_speech_acts$act_code == "ED", ]
+selected_columns_ed <- filtered_rows_ed[, c("utterance", "speaker")]
+sampled_data_ed <- selected_columns_ed[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_ed)
+
+filtered_rows_em <- clean_speech_acts[clean_speech_acts$act_code == "EM", ]
+selected_columns_em <- filtered_rows_em[, c("utterance", "speaker")]
+sampled_data_em <- selected_columns_em[sample(nrow(selected_columns_cl), 5), ]
+print(sampled_data_em)
+
+```
+
+
+
+```{r rep-plot}
+common_acts <- clean_speech_acts %>%
+  count(act_code, meaning) %>%
+  arrange(desc(n)) %>%
+  slice(1:15)
+
+labels <- c("agree to act", "agree with proposition", "answer affirmative", "answer calls", "ask wh- question", "ask wh- question", "ask yes/no question", "ask yes/no question", "declarative statement", "declarative statement", "mark event", "mark event", "no clear function", "prohibition", "propose action", "propose action", "repetition", "state intent", "answer wh- question", "question about other's wishes")
+
+branching_annotations <- tibble(meaning = 1:20,
+                                meaning_name = labels,
+                                age_bin = c(36, 32, 36, 46, 44, 48, 50, 44, 36,
+                                            36, 20, 50, 20, 50, 38, 24, 18, 36, 
+                                            38, 40),
+                                n = c(.99, .95, .925, .9, .86, .835, .775, 
+                                      .7, .6, .45, .30, .39,
+                                      .3, .22, .24, .14, .12, .10, .04, .02),
+                                speaker_role = c("Child","Parent","Child","Parent","Parent","Child","Child","Parent","Child","Parent","Parent","Child","Child","Parent","Child","Parent","Child","Child","Child","Parent"))
+  
+branching <- clean_speech_acts %>%
+  filter(act_code %in% common_acts$act_code) %>%
+  mutate(age_months = as.numeric(age_months),
+         age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (54/20)*age_bin + 6,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  group_by(age_bin, speaker_role) %>%
+  count(meaning) 
+
+
+branching_plot <- ggplot(branching, aes(x = age_bin, y = n, group = meaning, 
+             fill = as.factor(meaning))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role) +
+  theme_few(base_size = 10) +
+ theme(legend.position = "none") + 
+  geom_text(aes(label = meaning_name), size = 2.5, color = "white", hjust = 1,
+            fontface = "bold",data = branching_annotations) +
+  scale_x_continuous(breaks = c(12,24,36,48,60)) +
+  labs(x = "Age (months)", y = "Communicative act proportion")
+
+branching_plot
+
+ggsave(branching_plot, filename = "plots/branching_plot.png",  width = 12, height = 6, units = "in", dpi = 300, bg = "transparent")
+
+
+```
+
+```{r repair}
+repair <- clean_speech_acts %>%
+  mutate(age_months = as.numeric(age_months),
+         age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (54/20)*age_bin + 6,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  group_by(age_bin, speaker_role) %>%
+  count(meaning) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup() %>%
+  filter(meaning %in% c(" request repeat"))
+
+repair %>%
+  ggplot(aes(x = age_bin, y = prob, group = meaning, 
+             color = as.factor(meaning))) +
+               geom_line() +
+  facet_wrap(~speaker_role) +
+  theme_few(base_size = 10) +
+ theme(legend.position = "none") + 
+  scale_x_continuous(breaks = c(12,24,36,48,60)) +
+  labs(x = "Age (months)", y = "Communicative act proportion") 
+
+```
+
+
+
+```{r babble}
+babble_list <- c("ba", "ga", "da", "ma", "pa", "la", "na", "ka", "wa", "goo", "gaa", "doo", "moo", "poo", "loo", "noo", "koo", "woo", "baba", "gaga", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "lala", "nana", "kaka", "wawa", "gugu", "mimi", "pupu", "lulu", "nunu", "kuku", "wuwu", "bababa", "gagaga", "dadada","mamama", "papapa", "lalala", "nanana", "kakaka", "wawawa", "gugugu", "mimimi", "pupupu", "lululu","nununu", "kukuku", "wuwuwu", "a a", "uh", "uh uh", "da", "tu", "uhhuh", "uhhuhuh", "oh")
+
+
+
+
+Babble <- clean_speech_acts %>%
+  mutate(age_months = as.numeric(age_months),
+         age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (54/20)*age_bin + 6,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  group_by(age_bin, speaker_role) %>%
+  count(meaning) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup() %>%
+  filter(meaning %in% c(" no clear function"))
+
+Babble %>%
+  ggplot(aes(x = age_bin, y = prob, group = meaning, 
+             color = as.factor(meaning))) +
+               geom_line() +
+  facet_wrap(~speaker_role) +
+ theme(legend.position = "none") + 
+  scale_x_continuous(breaks = c(12,24,36,48,60)) +
+  labs(x = "Age (months)", y = "Communicative act proportion", title = "No clear function (babbling?) over time")
+```
