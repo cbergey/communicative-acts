@@ -14,6 +14,9 @@ library(patchwork)
 library(ggthemes)
 library(ggplot2)
 library(dplyr)
+library(ClusterR)
+library(cluster)
+library(NbClust)
 ```
 
 Load Speech Acts
@@ -84,7 +87,7 @@ ggplot(branching, aes(x = age_bin, y = n, group = meaning,
 
 
 
-#SAMPLED
+#SAMPLED rainbow plot with 3 children
 
 # Group by child_id and count the unique age_bin values for each child
 child_age_counts <- branching %>%
@@ -103,5 +106,50 @@ ggplot(branching_subset, aes(x = age_months, y = n, group = meaning, fill = as.f
   theme(axis.title.x = element_text(size = 15, face = "bold"),
         axis.title.y = element_text(size = 15, face = "bold"),
         strip.text.x = element_text(size = 15, face = "bold"))
+```
+
+
+Mixed Cluster Modeling
+```{r}
+cluster_df <- ldp_speech_acts[, c("child_id", "act_code", "age_months")]
+  cluster_df$act_code <- as.factor(cluster_df$act_code)
+
+
+ca_counts_over_time <- cluster_df %>%
+  group_by(child_id, age_months, act_code) %>%
+  summarize(count = n()) %>%
+  spread(act_code, count, fill = 0)
+ca_matrix_over_time <- ca_counts_over_time %>%
+  select(-child_id, -age_months) %>%
+  as.matrix()
+Optimal_Clusters <- NbClust(ca_counts_over_time, method = 'complete', index = 'all')$Best.nc
+
+
+
+ca_counts_over_time <- ca_counts_over_time %>%
+  group_by(child_id, age_months) %>%
+  summarise(num_act_codes = n_distinct(unlist(across(starts_with("AA"):ends_with("YY")), use.names = FALSE))) %>%
+  ungroup()
+
+#kmean clustering
+km_result <- kmeans(columns_for_clustering, centers = 4, nstart = 10)
+#centroids
+centroids <- as.data.frame(km_result$centers)
+
+# Assign clusters
+ca_counts_over_time$Cluster <- as.factor(km_result$cluster)
+
+#long format
+long_data <- ca_counts_over_time %>%
+  gather(key = "act_code", value = "num_act_codes", -c(child_id, age_months, Cluster))
+
+
+ggplot(long_data, aes(x = age_months, y = num_act_codes, color = as.factor(Cluster), group = interaction(child_id, Cluster))) +
+  geom_point() +
+  geom_line(alpha = 0.5) +
+  labs(title = "Clusters of unique ca, with each child represented as a line", x = "Age Months", y = "Unique CA Counts") +
+  theme_minimal()
+
+ggsave("Unique CA Clusters.png")
 ```
 
