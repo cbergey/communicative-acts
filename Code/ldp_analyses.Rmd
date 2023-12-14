@@ -153,3 +153,38 @@ ggplot(long_data, aes(x = age_months, y = num_act_codes, color = as.factor(Clust
 ggsave("Unique CA Clusters.png")
 ```
 
+
+Treating distribution of CA as vector
+```{r}
+ca_distribution <- cluster_df %>%
+  group_by(child_id, act_code, age_months) %>%
+  summarise(count = n()) %>%
+  group_by(child_id) %>%
+  mutate(probability = count / sum(count)) %>%
+  ungroup() %>%
+  select(-count) %>%
+  spread(act_code, probability, fill = 0)
+ca_distribution_matrix <- ca_distribution %>%
+  select(-child_id, -age_months) %>%
+  as.matrix()
+
+optimal_clusters_prob <- NbClust(ca_distribution_matrix, method = 'complete', index = 'all')$Best.nc
+
+kmeans_result <- kmeans(ca_distribution_matrix, centers = 6, nstart = 10)
+
+# Merge the cluster assignments with the original data
+ca_distribution$cluster <- as.factor(kmeans_result$cluster)
+
+long_data <- as.data.frame(ca_distribution) %>%
+  gather(key = "act_code", value = "probability", starts_with("AA"):ends_with("YY"))
+
+## Averaging for each cluster
+average_long_data <- long_data %>%
+  group_by(cluster, act_code) %>%
+  summarise(mean = mean(probability))
+
+ggplot(average_long_data, aes(x=act_code, y = mean)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~cluster)
+```
+
