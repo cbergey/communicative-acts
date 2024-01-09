@@ -1,0 +1,142 @@
+---
+title: "communicative act transitions"
+output: html_document
+date: "2023-11-28"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(childesr)
+library(here)
+library(patchwork)
+library(ggthemes)
+library(igraph)
+library(statnet)
+library(entropy)
+```
+
+```{r read-data}
+ldp_acts <- read_csv(here("ldp_speech_acts_deidentified.csv"))
+act_codes <- read.csv(here("act_codes.csv"))
+
+subj_info <- read_csv(here("ldp_subject_info.csv")) %>%
+  mutate(tbi_status = if_else(!is.na(lesion), "traumatic_brain_injury", "typically_developing"))
+
+ldp_acts <- ldp_acts %>%
+  rename(act_code = y_pred) %>%
+  left_join(act_codes, by = "act_code") %>%
+  left_join(subj_info %>% select(id, tbi_status), by = c("child_id" = "id"))
+  
+```
+
+```{r}
+common_acts <- ldp_acts %>%
+  count(meaning) %>%
+  arrange(desc(n)) %>%
+  slice(1:40)
+
+adjacency_matrix <- ldp_acts %>%
+  rename(meaning = y_pred) %>%
+  mutate(next_meaning = lead(meaning)) %>%
+  filter(meaning %in% common_acts$meaning) %>%
+  filter(next_meaning %in% common_acts$meaning) %>%
+  count(meaning, next_meaning) %>%
+  group_by(meaning) %>%
+  mutate(p = n/sum(n)) %>%
+  ungroup() %>%
+  select(-n) %>%
+  pivot_wider(names_from = next_meaning, values_from = p) 
+
+adjacency_matrix[is.na(adjacency_matrix)] <- 0
+row.names(adjacency_matrix) <- adjacency_matrix$meaning
+
+adjacency_matrix <- as.matrix(adjacency_matrix)
+adjacency_matrix <- adjacency_matrix[,-c(1)]
+network <- graph_from_incidence_matrix(adjacency_matrix)
+
+edge_list <- ldp_acts %>%
+  rename(meaning = y_pred) %>%
+  mutate(next_meaning = lead(meaning)) %>%
+  filter(meaning %in% common_acts$meaning) %>%
+  filter(next_meaning %in% common_acts$meaning) %>%
+  count(meaning, next_meaning) %>%
+  group_by(meaning) %>%
+  mutate(p = n/sum(n)) %>%
+  ungroup() %>%
+  select(-n) %>%
+  rename(source = meaning, target = next_meaning)
+
+net <- as.network(edge_list, loops = TRUE)
+plot.network(net, label = network.vertex.names(net), edge.lwd = 0.2)
+```
+```{r gephi}
+node_ids <- edge_list %>%
+  select(source) %>%
+  distinct(source) %>%
+  rowid_to_column("id") %>%
+  rename(label = source)
+
+edge_list_gephi <- edge_list %>%
+  left_join(node_ids, by = c("source" = "label")) %>%
+  select(-source) %>%
+  rename(source = id) %>%
+  left_join(node_ids, by = c("target" = "label")) %>%
+  select(-target) %>%
+  rename(target = id) %>%
+  rename(weight = p) %>%
+  select(source, target, weight)
+
+node_ids <- node_ids %>%
+  rename(act_code = label) %>%
+  left_join(act_codes, by="act_code") %>% 
+  select(-act_code) %>%
+  rename(label = meaning)
+
+write_csv(node_ids, "ldp_nodes_gephi.csv")
+write_csv(edge_list_gephi, "ldp_edges_gephi.csv")
+
+ldp_acts %>%
+  rename(act_code = y_pred) %>%
+  left_join(act_codes, by="act_code") %>%
+  filter(meaning == " give in") %>%
+  View()
+```
+
+```{r entropies}
+little_data_sessions <- ldp_acts %>%
+  group_by(child_id, age_months, speaker) %>%
+  count() %>%
+  filter(n < 20) %>%
+  mutate(id_session = paste(child_id, age_months, sep = "_"))
+
+entropies <- ldp_acts %>%
+  mutate(id_session = paste(child_id, age_months, sep = "_")) %>%
+  filter(!(id_session %in% little_data_sessions$id_session)) %>%
+  group_by(tbi_status, child_id, age_months, speaker) %>%
+  count(meaning) %>%
+  summarise(entropy = entropy(n)) %>%
+  ungroup()
+
+avg_entropies <- entropies %>% 
+  group_by(tbi_status, age_months, speaker) %>%
+  summarise(mean_entropy = mean(entropy))
+
+ggplot(entropies, aes(x = age_months, y = entropy, color = as.factor(child_id))) +
+  geom_line() +
+  facet_grid(tbi_status~speaker)
+
+ggplot(avg_entropies, aes(x = age_months, y = mean_entropy, color = tbi_status)) +
+  geom_line() +
+  facet_wrap(~speaker)
+```
+
+```{r entropy-cors}
+entropies %>%
+  pivot_wider(values_from = entropy, names_from = speaker, names_prefix = "entropy_") %>%
+  ggplot(aes(x = entropy_ADU, y = entropy_CHI)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  facet_grid(tbi_status~age_months) +
+  ylim(0.5,3)
+
+```
