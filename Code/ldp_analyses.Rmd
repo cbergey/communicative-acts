@@ -1,0 +1,190 @@
+---
+title: "LDP_Analyses"
+author: "misha !"
+date: "2023-11-14"
+output: html_document
+---
+
+Load libraries
+```{r}
+library(tidyverse)
+library(childesr)
+library(here)
+library(patchwork)
+library(ggthemes)
+library(ggplot2)
+library(dplyr)
+library(ClusterR)
+library(cluster)
+library(NbClust)
+```
+
+Load Speech Acts
+```{r}
+ldp_speech_acts <- read.csv("/Users/michaelokeeffe/Documents/SoIL/Fall 2023/ldp_speech_acts_deidentified.csv")
+colnames(ldp_speech_acts)[colnames(ldp_speech_acts) == "y_pred"] <- "act_code"
+act_codes <- read_csv(here("act_codes.csv"))
+```
+
+Left Join
+```{r}
+ldp_speech_acts <- ldp_speech_acts %>%
+  left_join(act_codes, by="act_code")
+```
+
+
+
+Rainbow Plot
+
+```{r rep-plot}
+common_acts <- ldp_speech_acts %>%
+  count(act_code, meaning) %>%
+  arrange(desc(n)) %>%
+  slice(1:15)
+
+labels <- c("agree to act", "agree with proposition", "answer affirmative", "answer calls", "ask wh- question", "ask wh- question", "ask yes/no question", "ask yes/no question", "declarative statement", "declarative statement", "mark event", "mark event", "no clear function", "prohibition", "propose action", "propose action", "repetition", "state intent", "answer wh- question", "question about other's wishes")
+
+branching_annotations <- tibble(meaning = 1:15,
+                                meaning_name = labels,
+                                age_bin = c(36, 32, 36, 46, 44, 48, 50, 44, 36,
+                                            36, 20, 53, 22, 50, 38, 24, 21, 36, 
+                                            38, 40),
+                                n = c(.99, .97, .93, .9, .86, .845, .785, 
+                                      .7, .65, .45, .30, .39,
+                                      .31, .22, .24, .14, .12, .10, .04, .02),
+                                speaker_role = c("Child","Parent","Child","Parent","Parent","Child","Child","Parent","Child","Parent","Parent","Child","Child","Parent","Child","Parent","Child","Child","Child","Parent"))
+  
+branching <- ldp_speech_acts %>%
+  filter(act_code %in% common_acts$act_code) %>%
+  mutate(age_months = as.numeric(age_months),
+         age_bin = cut(age_months, 20, labels = FALSE),
+         age_bin = (44/20)*age_bin + 14,
+         speaker_role = if_else(speaker == "CHI", "Child", "Parent"),
+         speaker_role = factor(speaker_role, levels = c("Child", "Parent"))) %>%
+  group_by(age_bin, speaker_role, child_id, age_months) %>%
+  count(meaning) 
+
+
+
+ggplot(branching, aes(x = age_bin, y = n, group = meaning, 
+             fill = as.factor(meaning))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role) +
+  theme_few(base_size = 10) +
+  #theme(legend.position = "none") + 
+  #geom_text(aes(label = meaning_name), size = 3, color = "white", hjust = 1,
+   #         fontface = "bold",data = branching_annotations) +
+  labs(x = "Age (months)", y = "Communicative act proportion")+
+  theme(axis.title.x=element_text(size=15,face="bold"),
+        axis.title.y=element_text(size=15,face="bold"),
+        strip.text.x=element_text(size=15,face="bold"))
+
+#ggsave(branching_plot, filename = "plots/branching_plot.png",  width = 9, height = 5, units = "in", dpi = 300, bg = "transparent")
+
+
+
+
+
+
+
+#SAMPLED rainbow plot with 3 children
+
+# Group by child_id and count the unique age_bin values for each child
+child_age_counts <- branching %>%
+  group_by(child_id) %>%
+  summarize(unique_age_bins = n_distinct(age_bin))
+
+# Filter the data for child IDs 22, 24, and 25
+branching_subset <- branching %>% filter(child_id %in% c(22, 24, 25))
+
+# Plot the data for the specified child IDs
+ggplot(branching_subset, aes(x = age_months, y = n, group = meaning, fill = as.factor(meaning))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_role + as.factor(child_id)) +
+  theme_few(base_size = 10) +
+  labs(x = "Age (months)", y = "Communicative act proportion") +
+  theme(axis.title.x = element_text(size = 15, face = "bold"),
+        axis.title.y = element_text(size = 15, face = "bold"),
+        strip.text.x = element_text(size = 15, face = "bold"))
+```
+
+
+Mixed Cluster Modeling
+```{r}
+cluster_df <- ldp_speech_acts[, c("child_id", "act_code", "age_months")]
+  cluster_df$act_code <- as.factor(cluster_df$act_code)
+
+
+ca_counts_over_time <- cluster_df %>%
+  group_by(child_id, age_months, act_code) %>%
+  summarize(count = n()) %>%
+  spread(act_code, count, fill = 0)
+ca_matrix_over_time <- ca_counts_over_time %>%
+  select(-child_id, -age_months) %>%
+  as.matrix()
+Optimal_Clusters <- NbClust(ca_counts_over_time, method = 'complete', index = 'all')$Best.nc
+
+
+
+ca_counts_over_time <- ca_counts_over_time %>%
+  group_by(child_id, age_months) %>%
+  summarise(num_act_codes = n_distinct(unlist(across(starts_with("AA"):ends_with("YY")), use.names = FALSE))) %>%
+  ungroup()
+
+#kmean clustering
+km_result <- kmeans(columns_for_clustering, centers = 4, nstart = 10)
+#centroids
+centroids <- as.data.frame(km_result$centers)
+
+# Assign clusters
+ca_counts_over_time$Cluster <- as.factor(km_result$cluster)
+
+#long format
+long_data <- ca_counts_over_time %>%
+  gather(key = "act_code", value = "num_act_codes", -c(child_id, age_months, Cluster))
+
+
+ggplot(long_data, aes(x = age_months, y = num_act_codes, color = as.factor(Cluster), group = interaction(child_id, Cluster))) +
+  geom_point() +
+  geom_line(alpha = 0.5) +
+  labs(title = "Clusters of unique ca, with each child represented as a line", x = "Age Months", y = "Unique CA Counts") +
+  theme_minimal()
+
+ggsave("Unique CA Clusters.png")
+```
+
+
+Treating distribution of CA as vector
+```{r}
+ca_distribution <- cluster_df %>%
+  group_by(child_id, act_code, age_months) %>%
+  summarise(count = n()) %>%
+  group_by(child_id) %>%
+  mutate(probability = count / sum(count)) %>%
+  ungroup() %>%
+  select(-count) %>%
+  spread(act_code, probability, fill = 0)
+ca_distribution_matrix <- ca_distribution %>%
+  select(-child_id, -age_months) %>%
+  as.matrix()
+
+optimal_clusters_prob <- NbClust(ca_distribution_matrix, method = 'complete', index = 'all')$Best.nc
+
+kmeans_result <- kmeans(ca_distribution_matrix, centers = 6, nstart = 10)
+
+# Merge the cluster assignments with the original data
+ca_distribution$cluster <- as.factor(kmeans_result$cluster)
+
+long_data <- as.data.frame(ca_distribution) %>%
+  gather(key = "act_code", value = "probability", starts_with("AA"):ends_with("YY"))
+
+## Averaging for each cluster
+average_long_data <- long_data %>%
+  group_by(cluster, act_code) %>%
+  summarise(mean = mean(probability))
+
+ggplot(average_long_data, aes(x=act_code, y = mean)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~cluster)
+```
+
