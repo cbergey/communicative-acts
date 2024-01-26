@@ -1,0 +1,455 @@
+---
+title: "communicative act entropies"
+output: html_document
+date: "2023-11-28"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(childesr)
+library(here)
+library(patchwork)
+library(ggthemes)
+library(igraph)
+library(statnet)
+library(entropy)
+library(philentropy)
+library(ggthemes)
+library(ggalluvial)
+library(feather)
+library(lme4)
+library(lmerTest)
+library(broom.mixed)
+
+knitr::opts_chunk$set(warning = FALSE, echo = FALSE, message = FALSE)
+```
+
+```{r read-data}
+ldp_raw <- read_csv(here("data/ldp_speech_acts.csv"))
+act_codes <- read.csv(here("act_codes.csv"))
+measures <- read_feather(here("data/measures.feather")) %>%
+  mutate(age_months = 14 + (as.numeric(visit) - 1)*4)
+
+subj_info <- read_csv(here("ldp_subject_info.csv")) %>%
+  mutate(tbi_status = if_else(!is.na(lesion), "traumatic_brain_injury", "typically_developing"))
+
+adjacency_pairs <- read_csv(here("adjacency_pairs_contingency.csv"))
+
+ldp_acts <- ldp_raw %>%
+  arrange(utterance_id) %>%
+  rename(act_code = speech_act) %>%
+  left_join(act_codes, by = "act_code") %>%
+  left_join(subj_info %>% select(id, tbi_status), by = c("child_id" = "id")) %>%
+  # only include typically developing kids (excludes kids with a traumatic brain injury)
+  filter(tbi_status == "typically_developing") %>%
+  group_by(child_id, age_months) %>%
+  mutate(prior_act = lag(meaning),
+         prior_act_code = lag(act_code),
+         lag_speaker = lag(speaker_code)) %>%
+  ungroup() %>%
+  left_join(adjacency_pairs %>% select(source, target, contingency), 
+  by = c("prior_act_code" = "source", "act_code" = "target")) 
+
+enough_data_sessions <- ldp_acts %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count() %>%
+  pivot_wider(names_from = speaker_code, values_from = n) %>%
+  filter(CHI > 20, ADU > 20) %>%
+  mutate(id_session = paste(child_id, age_months, sep = "_"))
+
+ldp_acts <- ldp_acts %>%
+  mutate(id_session = paste(child_id, age_months, sep = "_")) %>%
+  filter(id_session %in% enough_data_sessions$id_session)
+
+common_acts <- ldp_acts %>%
+  count(meaning) %>%
+  arrange(desc(n)) %>%
+  slice(1:20)
+```
+
+```{r branching}
+branching <- ldp_acts %>%
+  filter(meaning %in% common_acts$meaning) %>%
+  group_by(age_months, speaker_code) %>%
+  count(meaning) 
+
+ggplot(branching, aes(x = age_months, y = n, group = meaning, 
+             fill = as.factor(meaning))) +
+  geom_area(position = "fill", color = "black") +
+  facet_wrap(~speaker_code) +
+  theme_few(base_size = 10) +
+  theme(legend.position = "none") + 
+  #geom_text(aes(label = meaning_name), size = 3, color = "white", hjust = 1,
+  #          fontface = "bold",data = branching_annotations) +
+  scale_x_continuous(breaks = c(12,24,36,48,60)) +
+  labs(x = "Age (months)", y = "Communicative act proportion")+
+  theme(axis.title.x=element_text(size=15,face="bold"),
+        axis.title.y=element_text(size=15,face="bold"),
+        strip.text.x=element_text(size=15,face="bold"))
+```
+Children's communicative act repertoires expand over this age range.
+
+```{r entropies}
+act_counts <- ldp_acts %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count(meaning) %>%
+  ungroup() %>%
+  complete(child_id, speaker_code, age_months, meaning) %>%
+  replace_na(list("n" = 0)) %>%
+  mutate(id_session = paste(child_id, age_months, sep = "_")) %>%
+  filter(id_session %in% enough_data_sessions$id_session)
+
+entropies <- act_counts %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  summarise(entropy = entropy(n)) %>%
+  ungroup()
+
+avg_entropies <- entropies %>% 
+  group_by(age_months, speaker_code) %>%
+  summarise(mean_entropy = mean(entropy)) %>%
+  ungroup()
+
+ggplot(entropies %>% mutate(speaker = if_else(speaker_code == "ADU", "Parent", "Child")), 
+       aes(x = age_months, y = entropy)) +
+  geom_point() +
+  geom_smooth(alpha = 0.2) +
+  facet_wrap(~speaker) +
+  xlab("Age in months") +
+  ylab("Entropy of communicative act distribution")
+```
+
+Children's diversity of communicative act use increases rapidlly from 14-36 months.
+
+```{r entropy-cors}
+entropies %>%
+  pivot_wider(values_from = entropy, names_from = speaker_code, names_prefix = "entropy_") %>%
+  ggplot(aes(x = entropy_ADU, y = entropy_CHI)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  facet_wrap(~age_months) +
+  ylim(0.5,3)
+
+avg_entropies_by_child <- entropies %>%
+  group_by(child_id, speaker_code) %>%
+  summarise(mean_entropy = mean(entropy)) %>%
+  ungroup() %>%
+  pivot_wider(values_from = mean_entropy, names_from = speaker_code, names_prefix = "entropy_")
+
+cor.test(avg_entropies_by_child$entropy_ADU, avg_entropies_by_child$entropy_CHI)
+```
+
+Children's and parents' average entropies are correlated -- children with more diverse communicative acts are talking to parents with more diverse communicative acts.
+
+```{r ent-cor-plot}
+avg_entropies_by_child %>%
+  ggplot(aes(x = entropy_ADU, y = entropy_CHI)) +
+  geom_point() +
+  geom_smooth(method = lm)
+```
+
+```{r JSD}
+get_JSD <- function(counts) {
+  wide_counts <- counts %>% 
+    pivot_wider(names_from = "speaker_code", values_from = "n") %>%
+    select(ADU, CHI) 
+  vectors = rbind(wide_counts$ADU, wide_counts$CHI)
+  return(JSD(vectors, est.prob = "empirical"))
+}
+
+dyad_JSDs <- act_counts %>% 
+  nest(.by = c("child_id", "age_months")) %>%
+  mutate(JSD = map_dbl(data, ~get_JSD(.)))
+
+ggplot(dyad_JSDs, aes(x = age_months, y = JSD)) +
+  geom_point() +
+  geom_smooth() +
+  xlab("Age in months") +
+  ylab("JSD between parent and child distributions")
+```
+
+Children's and parents' distributions of communicative acts get more similar over development (as measured by lower JSD). 
+
+```{r lag-JSD}
+lag_JSDs <- act_counts %>%
+  pivot_wider(names_from = "speaker_code", values_from = "n") %>%
+  group_by(child_id) %>%
+  arrange(child_id, age_months, meaning) 
+  
+ldp_acts %>% summarise(n = n_distinct(child_id))
+
+predict_child_ent <- entropies %>%
+  group_by(child_id, speaker_code) %>%
+  arrange(age_months) %>%
+  mutate(lag_entropy = lag(entropy)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = "speaker_code", values_from = c("entropy", "lag_entropy"))
+```
+
+```{r JSD-pairs}
+ages <- act_counts %>%
+  ungroup() %>%
+  arrange(age_months) %>%
+  distinct(age_months) %>%
+  rename(child_age = age_months)
+
+participants <- act_counts %>%
+  ungroup() %>%
+  distinct(child_id) %>%
+  cross_join(ages) %>%
+  cross_join(ages %>% rename(parent_age = child_age)) 
+
+self_participants <- act_counts %>%
+  ungroup() %>%
+  distinct(child_id) %>%
+  cross_join(ages) %>%
+  rename(age_1 = child_age) %>%
+  cross_join(ages %>% rename(age_2 = child_age))
+
+nested_counts <- act_counts %>%
+  ungroup() %>%
+  arrange(child_id, speaker_code, age_months, meaning) %>%
+  nest_by(child_id, speaker_code, age_months) %>%
+  rename(counts = data)
+
+crossed_counts <- participants %>%
+  left_join(nested_counts %>% filter(speaker_code == "ADU"), 
+            by = c("child_id", "parent_age" = "age_months")) %>%
+  rename(parent_counts = counts) %>%
+  select(-speaker_code) %>%
+  left_join(nested_counts %>% filter(speaker_code == "CHI"), 
+            by = c("child_id", "child_age" = "age_months")) %>%
+  rename(child_counts = counts) %>%
+  select(-speaker_code) 
+
+self_parent <- self_participants %>%
+  left_join(nested_counts %>% filter(speaker_code == "ADU"), 
+            by = c("child_id", "age_1" = "age_months")) %>%
+  rename(counts_1 = counts) %>%
+  select(-speaker_code) %>%
+  left_join(nested_counts %>% filter(speaker_code == "ADU"), 
+            by = c("child_id", "age_2" = "age_months")) %>%
+  rename(counts_2 = counts) %>%
+  select(-speaker_code) 
+
+self_child <- self_participants %>%
+  left_join(nested_counts %>% filter(speaker_code == "CHI"), 
+            by = c("child_id", "age_1" = "age_months")) %>%
+  rename(counts_1 = counts) %>%
+  select(-speaker_code) %>%
+  left_join(nested_counts %>% filter(speaker_code == "CHI"), 
+            by = c("child_id", "age_2" = "age_months")) %>%
+  rename(counts_2 = counts) %>%
+  select(-speaker_code) 
+
+JSD_pairs <- function(first_dist, second_dist) {
+  vectors = rbind(first_dist$n, second_dist$n)
+  return(JSD(vectors, est.prob = "empirical"))
+}
+
+crossed_JSDs <- crossed_counts %>%
+  filter(!is.na(parent_counts), !is.na(child_counts)) %>%
+  mutate(JSD = map2_dbl(parent_counts, child_counts, JSD_pairs))
+
+self_parent_JSDs <- self_parent %>%
+  filter(!is.na(counts_1), !is.na(counts_2)) %>%
+  mutate(JSD = map2_dbl(counts_1, counts_2, JSD_pairs))
+
+self_child_JSDs <- self_child %>%
+  filter(!is.na(counts_1), !is.na(counts_2)) %>%
+  mutate(JSD = map2_dbl(counts_1, counts_2, JSD_pairs))
+
+crossed_JSDs %>%
+  group_by(child_age, parent_age) %>%
+  summarise(mean_JSD = mean(JSD)) %>%
+  ggplot(aes(x=child_age, y=parent_age, fill=mean_JSD)) + 
+  geom_tile() +
+  viridis::scale_fill_viridis()
+
+crossed_JSDs %>%
+  ggplot(aes(x=child_age, y=parent_age, fill=JSD)) + 
+  geom_tile() +
+  facet_wrap(~child_id) +
+  viridis::scale_fill_viridis() 
+
+self_parent_JSDs %>%
+  group_by(age_1, age_2) %>%
+  summarise(mean_JSD = mean(JSD), na.rm = TRUE) %>%
+  ggplot(aes(x=age_1, y=age_2, fill=mean_JSD)) + 
+  geom_tile() +
+  viridis::scale_fill_viridis()
+
+self_child_JSDs %>%
+  group_by(age_1, age_2) %>%
+  summarise(mean_JSD = mean(JSD), na.rm = TRUE) %>%
+  ggplot(aes(x=age_1, y=age_2, fill=mean_JSD)) + 
+  geom_tile() +
+  viridis::scale_fill_viridis()
+
+self_parent_JSDs %>%
+  ggplot(aes(x=age_1, y=age_2, fill=JSD)) + 
+  geom_tile() +
+  facet_wrap(~child_id) +
+  viridis::scale_fill_viridis() 
+
+self_child_JSDs %>%
+  ggplot(aes(x=age_1, y=age_2, fill=JSD)) + 
+  geom_tile() +
+  facet_wrap(~child_id) +
+  viridis::scale_fill_viridis() 
+```
+
+
+```{r contingency}
+transition_matrices <- ldp_acts %>%
+  filter(lag_speaker != speaker_code) %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count(prior_act, meaning) %>%
+  filter(!is.na(meaning), !is.na(prior_act)) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup()
+
+transition_matrices %>%
+  group_by(age_months, speaker_code, prior_act, meaning) %>%
+  summarise(n = sum(n)) %>%
+  ungroup() %>%
+  group_by(age_months, speaker_code) %>%
+  mutate(mean_prob = n/sum(n)) %>% 
+  ungroup() %>%
+  filter(meaning %in% common_acts$meaning, prior_act %in% common_acts$meaning) %>%
+  ggplot(aes(x=meaning, y=prior_act, fill=log(mean_prob))) + 
+  geom_tile() +
+  facet_grid(speaker_code~age_months) +
+  viridis::scale_fill_viridis() 
+
+transition_matrices %>%
+  filter(speaker_code == "CHI",
+         meaning %in% common_acts$meaning,
+         prior_act %in% common_acts$meaning) %>%
+  ggplot(aes(y = prob, axis1 = prior_act, axis2 = meaning)) + 
+  geom_alluvium(aes(fill = meaning), width = 1/12) +
+  geom_stratum(width = 1/12, fill = "black", color = "grey") +
+  facet_wrap(~age_months)
+```
+```{r adjacency-pairs, eval = FALSE}
+ldp_acts %>%
+  group_by(transcript_file) %>%
+  filter(lag_speaker != speaker_code) %>%
+  ungroup() %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  summarise(prop_contingent = sum(contingency, na.rm = TRUE)/n()) %>%
+  ungroup() %>%
+  ggplot(aes(x = age_months, y = prop_contingent, color = as.factor(child_id))) +
+  facet_wrap(~speaker_code) +
+  geom_line()
+
+ldp_acts %>%
+  group_by(transcript_file) %>%
+  filter(lag_speaker != speaker_code) %>%
+  ungroup() %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  summarise(prop_contingent = sum(contingency, na.rm = TRUE)/n()) %>%
+  ungroup() %>%
+  ggplot(aes(x = age_months, y = prop_contingent, color = speaker_code)) +
+  geom_point() +
+  geom_smooth()
+```
+
+```{r vocab}
+word_counts <- ldp_acts %>%
+  mutate(word = strsplit(as.character(str_remove_all(tokens, "[[:punct:]]")), " ")) %>% 
+  unnest(word) %>%
+  group_by(child_id, age_months, transcript_file, speaker_code, word) %>%
+  summarise(n = n()) %>%
+  ungroup()
+
+vocab <- word_counts %>%
+  group_by(child_id, age_months, transcript_file, speaker_code) %>%
+  summarise(vocab_size = n_distinct(word)) %>%
+  ungroup()
+
+vocab_by_child <- word_counts %>%
+  group_by(child_id, speaker_code) %>%
+  summarise(vocab_size = n_distinct(word)) %>%
+  ungroup()
+
+vocab %>%
+  ggplot(aes(x = age_months, y = vocab_size, color = as.factor(child_id))) +
+  geom_line() +
+  facet_wrap(~speaker_code)
+
+vocab %>%
+  group_by(age_months, speaker_code) %>%
+  summarise(mean_vocab = mean(vocab_size)) %>%
+  ggplot(aes(x = age_months, y = mean_vocab)) +
+  geom_smooth() +
+  facet_wrap(~speaker_code)
+```
+
+```{r measures}
+latest_ppvt <- measures %>%
+  filter(visit == 11, measure == "ppvt") 
+
+ent_vocab_session <- entropies %>%
+  left_join(vocab) %>%
+  pivot_wider(names_from = c(speaker_code), 
+              values_from = c(entropy, vocab_size))
+
+lm(vocab_size_CHI ~ entropy_CHI + entropy_ADU + vocab_size_CHI + age_months, 
+   data = ent_vocab_session) %>%
+  tidy() 
+```
+
+```{r ent-ppvt-avg}
+
+ent_ppvt_vocab <- avg_entropies_by_child %>%
+  left_join(latest_ppvt %>% select(subject, value),
+            by = c("child_id" = "subject")) %>%
+  rename(ppvt_score = value) %>%
+  left_join(vocab_by_child) %>%
+  pivot_wider(names_from = speaker_code, names_prefix = "vocab_", values_from = vocab_size)
+
+ent_ppvt_vocab %>%
+  ggplot(aes(x = entropy_CHI, y = ppvt_score)) +
+  geom_point() +
+  geom_smooth(method = lm)
+
+ent_ppvt_vocab %>%
+  ggplot(aes(x = entropy_ADU, y = ppvt_score)) +
+  geom_point() +
+  geom_smooth(method = lm)
+
+ent_ppvt_vocab %>%
+  ggplot(aes(x = entropy_CHI, y = vocab_CHI)) +
+  geom_point() +
+  geom_smooth(method = lm)
+
+cor.test(ent_ppvt_vocab$entropy_ADU, ent_ppvt_vocab$ppvt_score)
+cor.test(ent_ppvt_vocab$entropy_CHI, ent_ppvt_vocab$ppvt_score)
+
+cor.test(ent_ppvt_vocab$entropy_ADU, ent_ppvt_vocab$vocab_CHI)
+cor.test(ent_ppvt_vocab$entropy_CHI, ent_ppvt_vocab$vocab_CHI)
+```
+
+```{r ent-models}
+lagged_ents_JSDs <- entropies %>%
+  left_join(dyad_JSDs) %>%
+  select(-data) %>%
+  pivot_wider(names_from = speaker_code, names_prefix = "ent_", values_from = entropy) %>%
+  arrange(child_id, age_months) %>%
+  group_by(child_id) %>%
+  mutate(prior_child_ent = lag(ent_CHI),
+         prior_adult_ent = lag(ent_ADU),
+         prior_JSD = lag(JSD)) %>%
+  ungroup() %>%
+  filter(!is.na(prior_child_ent), !is.na(prior_adult_ent))
+
+lm(ent_CHI ~ prior_child_ent + prior_adult_ent + prior_JSD + ent_ADU + age_months, 
+   data = lagged_ents_JSDs) %>%
+  tidy() 
+```
+
+```{r frames}
+
+
+
+```
