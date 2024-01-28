@@ -13,6 +13,7 @@ library(ggthemes)
 library(igraph)
 library(statnet)
 library(entropy)
+library(philentropy)
 ```
 
 ```{r read-data}
@@ -109,11 +110,14 @@ little_data_sessions <- ldp_acts %>%
   filter(n < 20) %>%
   mutate(id_session = paste(child_id, age_months, sep = "_"))
 
-entropies <- ldp_acts %>%
+act_counts <- ldp_acts %>%
   mutate(id_session = paste(child_id, age_months, sep = "_")) %>%
   filter(!(id_session %in% little_data_sessions$id_session)) %>%
   group_by(tbi_status, child_id, age_months, speaker) %>%
   count(meaning) %>%
+  ungroup()
+
+entropies <- act_counts %>%
   summarise(entropy = entropy(n)) %>%
   ungroup()
 
@@ -139,4 +143,24 @@ entropies %>%
   facet_grid(tbi_status~age_months) +
   ylim(0.5,3)
 
+```
+
+```{r JSD}
+get_JSD <- function(counts) {
+  print(counts)
+  wide_counts <- counts %>% unnest() %>%
+    pivot_wider(names_from = "speaker", values_from = "n") %>%
+    select(ADU, CHI) %>%
+    replace_na(list("ADU" = 0, "CHI" = 0)) 
+
+  vectors = rbind(wide_counts$ADU, wide_counts$CHI)
+
+  JSD(vectors, est.prob = "empirical")
+}
+
+test <- act_counts %>% 
+  select(-tbi_status) %>%
+  nest(.by = c("child_id", "age_months")) %>%
+  mutate(JSD = get_JSD(data))
+  
 ```

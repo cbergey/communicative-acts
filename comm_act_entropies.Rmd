@@ -1,6 +1,6 @@
 ---
 title: "communicative act entropies"
-output: html_document
+output: pdf_document
 date: "2023-11-28"
 ---
 
@@ -394,7 +394,9 @@ ent_vocab_session <- entropies %>%
   pivot_wider(names_from = c(speaker_code), 
               values_from = c(entropy, vocab_size))
 
-lm(vocab_size_CHI ~ entropy_CHI + entropy_ADU + vocab_size_CHI + age_months, 
+cor.test(ent_vocab_session$entropy_CHI, ent_vocab_session$vocab_size_CHI)
+
+lmer(vocab_size_CHI ~ entropy_CHI + entropy_ADU + age_months + (1|child_id), 
    data = ent_vocab_session) %>%
   tidy() 
 ```
@@ -443,7 +445,7 @@ lagged_ents_JSDs <- entropies %>%
   ungroup() %>%
   filter(!is.na(prior_child_ent), !is.na(prior_adult_ent))
 
-lm(ent_CHI ~ prior_child_ent + prior_adult_ent + prior_JSD + ent_ADU + age_months, 
+lmer(ent_CHI ~ prior_child_ent + prior_adult_ent + prior_JSD + ent_ADU + age_months + (1|child_id), 
    data = lagged_ents_JSDs) %>%
   tidy() 
 ```

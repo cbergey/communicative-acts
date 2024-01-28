@@ -1,0 +1,248 @@
+---
+title: "form x function"
+output: html_document
+date: "2024-01-26"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(childesr)
+library(here)
+library(patchwork)
+library(ggthemes)
+library(igraph)
+library(statnet)
+library(entropy)
+library(philentropy)
+library(ggthemes)
+library(ggalluvial)
+library(feather)
+library(udpipe)
+library(stats)
+
+knitr::opts_chunk$set(warning = FALSE, echo = FALSE, message = FALSE)
+```
+
+```{r read-data}
+ldp_raw <- read_csv(here("data/ldp_speech_acts.csv"))
+act_codes <- read.csv(here("act_codes.csv"))
+measures <- read_feather(here("data/measures.feather")) %>%
+  mutate(age_months = 14 + (as.numeric(visit) - 1)*4)
+
+subj_info <- read_csv(here("ldp_subject_info.csv")) %>%
+  mutate(tbi_status = if_else(!is.na(lesion), "traumatic_brain_injury", "typically_developing"))
+
+adjacency_pairs <- read_csv(here("adjacency_pairs_contingency.csv"))
+
+epsilon = 0.000000000001
+
+ldp_acts <- ldp_raw %>%
+  arrange(utterance_id) %>%
+  rename(act_code = speech_act) %>%
+  left_join(act_codes, by = "act_code") %>%
+  left_join(subj_info %>% select(id, tbi_status), by = c("child_id" = "id")) %>%
+  # only include typically developing kids (excludes kids with a traumatic brain injury)
+  filter(tbi_status == "typically_developing") %>%
+  group_by(child_id, age_months) %>%
+  mutate(prior_act = lag(meaning),
+         prior_act_code = lag(act_code),
+         lag_speaker = lag(speaker_code)) %>%
+  ungroup() %>%
+  left_join(adjacency_pairs %>% select(source, target, contingency), 
+  by = c("prior_act_code" = "source", "act_code" = "target")) %>%
+  mutate(utterance = gsub(" '", " ", tokens)) %>%
+  mutate(utterance = gsub("',", "", utterance)) %>%
+  mutate(utterance = gsub("'\\]", "", utterance)) %>%
+  mutate(utterance = gsub("\\['", "", utterance)) %>%
+  mutate(utterance = gsub(" \"", " ", utterance)) %>%
+  mutate(utterance = gsub("\",", "", utterance)) %>%
+  mutate(utterance = gsub("\"\\]", "", utterance)) %>%
+  mutate(utterance = gsub("\\[\"", "", utterance)) %>%
+  mutate(utterance = trimws(utterance)) %>%
+  mutate(meaning = trimws(meaning)) %>%
+  mutate(utterance = str_replace_all(trimws(str_remove_all(utterance, "[&.?#!+]")), 
+                                     "  ", " "))
+
+enough_data_sessions <- ldp_acts %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count() %>%
+  pivot_wider(names_from = speaker_code, values_from = n) %>%
+  filter(CHI > 20, ADU > 20) %>%
+  mutate(id_session = paste(child_id, age_months, sep = "_"))
+
+ldp_acts <- ldp_acts %>%
+  mutate(id_session = paste(child_id, age_months, sep = "_")) %>%
+  filter(id_session %in% enough_data_sessions$id_session)
+
+common_acts <- ldp_acts %>%
+  count(meaning) %>%
+  arrange(desc(n)) %>%
+  slice(1:20) 
+
+common_words <- ldp_acts %>%
+  mutate(word = strsplit(utterance, " ")) %>% 
+  unnest(word) %>%
+  group_by(word) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  slice(1:150)
+
+```
+
+```{r parse, eval = FALSE}
+udmodel <- udpipe_load_model(file = "english-ewt-ud-2.4-190531.udpipe")
+
+get_parse <- function(txt) {
+  parses <- txt %>%
+    udpipe(., udmodel, parallel.cores = 4) %>%
+    as_tibble() %>%
+    mutate(parse = if_else(token %in% common_words$word, token, upos),
+           parse = if_else((token == "'s" & upos == "PART"), upos, parse))
+
+  return(paste(parses$parse, collapse = " "))
+}
+
+vget_parse <- Vectorize(get_parse)
+
+parsed_utts <- ldp_acts %>%
+  rowwise() %>%
+  mutate(frame = vget_parse(utterance)) %>%
+  ungroup()
+
+#write_csv(parsed_utts, here("data/ldp_frames.csv"))
+parsed_utts <- read_csv(here("data/ldp_frames.csv"))
+```
+
+```{r}
+include_frames <- parsed_utts %>%
+  count(frame) %>%
+  arrange(desc(n)) %>%
+  filter(n > 10)
+
+common_frames <- parsed_utts %>%
+  count(frame) %>%
+  arrange(desc(n)) %>%
+  slice(1:30)
+
+frame_act <- parsed_utts %>%
+  filter(frame %in% include_frames$frame) %>%
+  group_by(age_months, speaker_code) %>%
+  count(meaning, frame) %>%
+  mutate(prob = n/sum(n)) %>%
+  ungroup()
+
+frame_act %>%
+  filter(meaning %in% common_acts$meaning,
+         frame %in% common_frames$frame) %>%
+  ungroup() %>%
+  ggplot(aes(fill = log(prob), x = meaning, y = frame)) +
+  geom_tile() +
+  facet_grid(speaker_code~age_months) +
+  viridis::scale_fill_viridis() 
+```
+
+```{r}
+form_function_joint <- parsed_utts %>%
+  filter(frame %in% include_frames$frame) %>%
+  group_by(age_months, speaker_code) %>%
+  count(frame, meaning) %>%
+  ungroup() %>%
+  complete(age_months, speaker_code, frame, meaning, fill = list(n = 0)) %>%
+  group_by(age_months, speaker_code) %>%
+  mutate(n = n + epsilon,
+         prob = n/sum(n)) %>%
+  ungroup()
+
+form_function_joint_by_child <- parsed_utts %>%
+  filter(frame %in% include_frames$frame) %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count(frame, meaning) %>%
+  ungroup() %>%
+  complete(child_id, age_months, speaker_code, frame, meaning, fill = list(n = 0)) %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  mutate(n = n + epsilon,
+         prob = n/sum(n)) %>%
+  ungroup()
+
+
+get_mis <- function(joint_probs_normed) {
+  
+  act_marginal <- joint_probs_normed %>%
+    group_by(age_months, speaker_code, meaning) %>%
+    summarise(act_prob = sum(prob)) %>% ungroup()
+  
+  frame_marginal <- joint_probs_normed %>%
+    group_by(age_months, speaker_code, frame) %>%
+    summarise(frame_prob = sum(prob)) %>% ungroup()
+  
+  all_probs <- joint_probs_normed %>%
+    rename(joint_prob = prob) %>%
+    left_join(act_marginal, 
+              by = c("age_months", "speaker_code", "meaning")) %>%
+    left_join(frame_marginal, 
+              by = c("age_months", "speaker_code", "frame"))
+  
+  parent <- all_probs %>%
+    filter(speaker_code == "ADU") %>%
+    mutate(term = joint_prob * log2(joint_prob/(act_prob * frame_prob))) %>%
+    group_by(age_months) %>%
+    summarise(mi = sum(term)) %>%
+    mutate(type = "parent")
+  
+  child <- all_probs %>%
+    filter(speaker_code == "CHI") %>%
+    mutate(term = joint_prob * log2(joint_prob/(act_prob * frame_prob))) %>%
+    group_by(age_months) %>%
+    summarise(mi = sum(term)) %>%
+    mutate(type = "child")
+
+  
+  all_mis <- rbind(child, parent)
+  return(all_mis)
+}
+
+get_mis_by_child <- function(joint_probs_normed) {
+  
+  act_marginal <- joint_probs_normed %>%
+    group_by(child_id, age_months, speaker_code, meaning) %>%
+    summarise(act_prob = sum(prob)) %>% ungroup()
+  
+  frame_marginal <- joint_probs_normed %>%
+    group_by(child_id, age_months, speaker_code, frame) %>%
+    summarise(frame_prob = sum(prob)) %>% ungroup()
+  
+  all_probs <- joint_probs_normed %>%
+    rename(joint_prob = prob) %>%
+    left_join(act_marginal, 
+              by = c("child_id", "age_months", "speaker_code", "meaning")) %>%
+    left_join(frame_marginal, 
+              by = c("child_id", "age_months", "speaker_code", "frame"))
+  
+  parent <- all_probs %>%
+    filter(speaker_code == "ADU") %>%
+    mutate(term = joint_prob * log2(joint_prob/(act_prob * frame_prob))) %>%
+    group_by(child_id, age_months) %>%
+    summarise(mi = sum(term)) %>%
+    mutate(type = "parent")
+  
+  child <- all_probs %>%
+    filter(speaker_code == "CHI") %>%
+    mutate(term = joint_prob * log2(joint_prob/(act_prob * frame_prob))) %>%
+    group_by(child_id, age_months) %>%
+    summarise(mi = sum(term)) %>%
+    mutate(type = "child")
+
+  
+  all_mis <- rbind(child, parent)
+  return(all_mis)
+}
+
+mis <- get_mis(form_function_joint)
+mis_by_child <- get_mis(form_function_joint_by_child)
+
+mis %>%
+  ggplot(aes(x = age_months, y = mi, color = type)) +
+  geom_line()
+
+```
