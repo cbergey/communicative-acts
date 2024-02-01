@@ -19,7 +19,11 @@ library(ggalluvial)
 library(feather)
 library(udpipe)
 library(stats)
-
+library(ggrepel)
+library(ggthemes)
+library(scales)
+library(viridis)
+library(artists)
 knitr::opts_chunk$set(warning = FALSE, echo = FALSE, message = FALSE)
 ```
 
@@ -67,7 +71,7 @@ enough_data_sessions <- ldp_acts %>%
   group_by(child_id, age_months, speaker_code) %>%
   count() %>%
   pivot_wider(names_from = speaker_code, values_from = n) %>%
-  filter(CHI > 20, ADU > 20) %>%
+  filter(CHI >= 10, ADU >= 10) %>%
   mutate(id_session = paste(child_id, age_months, sep = "_"))
 
 ldp_acts <- ldp_acts %>%
@@ -88,6 +92,7 @@ common_words <- ldp_acts %>%
   arrange(desc(n)) %>%
   slice(1:150)
 
+entropies <- read_csv(here("data/child_act_entropies.csv"))
 ```
 
 ```{r parse, eval = FALSE}
@@ -108,24 +113,59 @@ vget_parse <- Vectorize(get_parse)
 parsed_utts <- ldp_acts %>%
   rowwise() %>%
   mutate(frame = vget_parse(utterance)) %>%
-  ungroup()
+  ungroup() %>%
+  select(utterance_id, transcript_file, child_id, age_months, tokens, pos,
+         speaker_code, tbi_status, utterance, frame) %>%
+  arrange(utterance_id)
 
 #write_csv(parsed_utts, here("data/ldp_frames.csv"))
-parsed_utts <- read_csv(here("data/ldp_frames.csv"))
+
 ```
 
 ```{r}
-include_frames <- parsed_utts %>%
+parsed_utts <- read_csv(here("data/ldp_frames.csv"))
+
+ldp_acts_frames <- ldp_acts %>%
+  left_join(parsed_utts)
+
+include_frames <- ldp_acts_frames %>%
   count(frame) %>%
   arrange(desc(n)) %>%
   filter(n > 10)
 
-common_frames <- parsed_utts %>%
+common_frames <- ldp_acts_frames %>%
   count(frame) %>%
   arrange(desc(n)) %>%
   slice(1:30)
 
-frame_act <- parsed_utts %>%
+common_acts <- ldp_acts_frames %>%
+  count(meaning) %>%
+  arrange(desc(n)) %>%
+  slice(1:20)
+
+act_entropies <- ldp_acts_frames %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count(meaning) %>%
+  ungroup() %>%
+  complete(child_id, speaker_code, age_months, meaning) %>%
+  replace_na(list("n" = 0)) %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  summarise(entropy = entropy(n, unit = "log2")) %>%
+  ungroup()
+
+frame_entropies <- ldp_acts_frames  %>%
+  filter(frame %in% include_frames$frame) %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count(frame) %>%
+  ungroup() %>%
+  complete(child_id, speaker_code, age_months, frame) %>%
+  replace_na(list("n" = 0)) %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  summarise(frame_entropy = entropy(n, unit = "log2")) %>%
+  ungroup() %>%
+  left_join(act_entropies %>% rename("comm_act_entropy" = "entropy"))
+
+frame_act <- ldp_acts_frames %>%
   filter(frame %in% include_frames$frame) %>%
   group_by(age_months, speaker_code) %>%
   count(meaning, frame) %>%
@@ -139,32 +179,36 @@ frame_act %>%
   ggplot(aes(fill = log(prob), x = meaning, y = frame)) +
   geom_tile() +
   facet_grid(speaker_code~age_months) +
-  viridis::scale_fill_viridis() 
+  viridis::scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 ```
 
 ```{r}
-form_function_joint <- parsed_utts %>%
+form_function_joint_all <- ldp_acts_frames %>%
+  count(frame, meaning) %>%
+  mutate(prob = n/sum(n)) %>%
+  arrange(desc(prob)) %>%
+  ungroup() 
+
+top_multiword <- form_function_joint_all %>%
+  mutate(utt_length = lengths(str_split(frame, " "))) %>%
+  filter(utt_length >= 2)
+
+form_function_joint <- ldp_acts_frames %>%
   filter(frame %in% include_frames$frame) %>%
   group_by(age_months, speaker_code) %>%
   count(frame, meaning) %>%
-  ungroup() %>%
-  complete(age_months, speaker_code, frame, meaning, fill = list(n = 0)) %>%
-  group_by(age_months, speaker_code) %>%
   mutate(n = n + epsilon,
          prob = n/sum(n)) %>%
   ungroup()
 
-form_function_joint_by_child <- parsed_utts %>%
+form_function_joint_by_child <- ldp_acts_frames %>%
   filter(frame %in% include_frames$frame) %>%
   group_by(child_id, age_months, speaker_code) %>%
   count(frame, meaning) %>%
-  ungroup() %>%
-  complete(child_id, age_months, speaker_code, frame, meaning, fill = list(n = 0)) %>%
-  group_by(child_id, age_months, speaker_code) %>%
   mutate(n = n + epsilon,
          prob = n/sum(n)) %>%
   ungroup()
-
 
 get_mis <- function(joint_probs_normed) {
   
@@ -224,14 +268,16 @@ get_mis_by_child <- function(joint_probs_normed) {
     mutate(term = joint_prob * log2(joint_prob/(act_prob * frame_prob))) %>%
     group_by(child_id, age_months) %>%
     summarise(mi = sum(term)) %>%
-    mutate(type = "parent")
+    mutate(type = "parent") %>%
+    ungroup()
   
   child <- all_probs %>%
     filter(speaker_code == "CHI") %>%
     mutate(term = joint_prob * log2(joint_prob/(act_prob * frame_prob))) %>%
     group_by(child_id, age_months) %>%
     summarise(mi = sum(term)) %>%
-    mutate(type = "child")
+    mutate(type = "child") %>%
+    ungroup()
 
   
   all_mis <- rbind(child, parent)
@@ -239,10 +285,99 @@ get_mis_by_child <- function(joint_probs_normed) {
 }
 
 mis <- get_mis(form_function_joint)
-mis_by_child <- get_mis(form_function_joint_by_child)
+mis_by_child <- get_mis_by_child(form_function_joint_by_child)
 
 mis %>%
   ggplot(aes(x = age_months, y = mi, color = type)) +
-  geom_line()
+  geom_smooth()
 
+mi_annotations <- tibble(age_months = c(16, 16), 
+                         type = c("child", "parent"),
+                         percent_explained = c(.44, .86))
+
+mis_by_child %>%
+  ggplot(aes(x = age_months, y = mi, color = type)) +
+  geom_jitter(width = 0.8, height = 0, alpha = 0.3) +
+  geom_smooth() +
+  xlab("Age in months") +
+  ylab("Mutual information between syntactic frames \n and communicative acts") +
+  scale_color_manual(values = c("#be6b7b", "#8395b6")) +
+  theme_few()+
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank())
+
+mi_annotations <- tibble(age_months = c(16, 16), 
+                         type = c("child", "parent"),
+                         percent_explained = c(.44, .86))
+
+mis_by_child %>%
+  mutate(speaker_code = if_else(type == "child", "CHI", "ADU")) %>%
+  left_join(entropies, by = c("child_id", "age_months", "speaker_code")) %>%
+  mutate(percent_explained = mi/entropy) %>%
+  ggplot(aes(x = age_months, y = percent_explained, color = type, label = type)) +
+  geom_jitter(width = 0.8, height = 0, alpha = 0.3) +
+  geom_smooth() +
+  xlab("Age in months") +
+  ylab("Proportion of communicative act entropy \n explained by syntactic frame") +
+  scale_color_manual(values = c("#be6b7b", "#8395b6")) +
+  scale_color_manual(values = c("#be6b7b", "#8395b6")) +
+  theme_few()+
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text=element_text(size=12),
+    axis.title=element_text(size=14,face="bold")) +
+  geom_label(aes(label = type), data = mi_annotations, size = 5)
+
+
+mis_by_child %>%
+  mutate(speaker_code = if_else(type == "child", "CHI", "ADU")) %>%
+  left_join(entropies, by = c("child_id", "age_months", "speaker_code")) %>%
+  mutate(percent_explained = mi/entropy) %>%
+  group_by(age_months, speaker_code) %>%
+  summarise(mean(percent_explained))
+```
+
+```{r}
+frame_repertoire <- ldp_acts_frames %>%
+  group_by(child_id, age_months, speaker_code) %>%
+  count(frame) %>%
+  summarise(frame_entropy = entropy(n, unit = "log2")) %>%
+  ungroup() %>%
+  left_join(entropies %>% rename("comm_act_entropy" = "entropy"))
+
+average_frame_act_ents <- frame_repertoire %>%
+  group_by(child_id, speaker_code) %>%
+  summarise(mean_act_ent = mean(comm_act_entropy),
+            mean_frame_ent = mean(frame_entropy)) %>%
+  ungroup()
+
+ggplot(frame_repertoire, aes(x = age_months, y = frame_entropy, color = speaker_code)) +
+  geom_point() +
+  geom_smooth()
+
+ggplot(frame_repertoire, aes(x = comm_act_entropy, y = frame_entropy, group = speaker_code)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(~speaker_code)
+
+ggplot(average_frame_act_ents, aes(x = mean_act_ent, y = mean_frame_ent, group = speaker_code)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~speaker_code)
+
+child_frame_acts <- average_frame_act_ents %>% filter(speaker_code == "CHI")
+cor.test(child_frame_acts$mean_act_ent, child_frame_acts$mean_frame_ent)
+
+all_frame_act_cors <- frame_repertoire %>%
+  group_by(age_months) %>%
+  summarise(cor = cor.test(frame_entropy, comm_act_entropy)$estimate, 
+            p = cor.test(frame_entropy, comm_act_entropy)$p.value)
+
+mean(all_frame_act_cors$cor)
 ```

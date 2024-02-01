@@ -37,16 +37,19 @@ ldp_keep <- ldp_acts %>%
 ldp_acts <- ldp_acts %>%
   mutate(speaker_role = if_else(speaker_code == "ADU",
                                 "Parent", "Child")) %>%
+  mutate(prior_speaker = lag(speaker_role)) %>%
   filter(file_id %in% ldp_keep$file_id) %>%
-  mutate(age_bin = age_months) 
+  mutate(age_bin = age_months)
 
 num_acts <- n_distinct(ldp_acts$act_code)
 act_nums <- c(1:num_acts)
 
 joint_dist <- ldp_acts %>%
-  group_by(age_bin) %>%
-  count(speaker_role, prior_act, meaning) %>%
-  complete(speaker_role, prior_act, meaning, fill = list(n = 0)) %>%
+  group_by(age_bin, speaker_role, prior_speaker) %>%
+  count(prior_act, meaning) %>%
+  ungroup() %>%
+  complete(age_bin, speaker_role, prior_speaker, prior_act, meaning, fill = list(n = 0)) %>%
+  group_by(age_bin, speaker_role, prior_speaker) %>%
   mutate(n = n + epsilon,
          prob = n/sum(n)) %>%
   ungroup()
@@ -63,35 +66,49 @@ joint_dist <- ldp_acts %>%
 get_mis <- function(joint) {
   
   prior_act_marginal <- joint %>%
-    group_by(age_bin, speaker_role, prior_act) %>%
+    group_by(age_bin, speaker_role, prior_speaker, prior_act) %>%
     summarise(prior_act_prob = sum(prob)) %>% ungroup()
   
   this_act_marginal <- joint %>%
-    group_by(age_bin, speaker_role, meaning) %>%
+    group_by(age_bin, speaker_role, prior_speaker, meaning) %>%
     summarise(this_act_prob = sum(prob)) %>% ungroup()
   
   all_probs <- joint %>%
     rename(joint_prob = prob) %>%
     left_join(prior_act_marginal, 
-              by = c("age_bin", "speaker_role", "prior_act")) %>%
+              by = c("age_bin", "speaker_role", "prior_speaker", "prior_act")) %>%
     left_join(this_act_marginal, 
-              by = c("age_bin", "speaker_role", "meaning"))
+              by = c("age_bin", "speaker_role", "prior_speaker", "meaning"))
   
   parent_given_child <- all_probs %>%
-    filter(speaker_role == "Parent") %>%
+    filter(speaker_role == "Parent", prior_speaker == "Child") %>%
     mutate(term = joint_prob * log2(joint_prob/(prior_act_prob * this_act_prob))) %>%
     group_by(age_bin) %>%
     summarise(mi = sum(term)) %>%
     mutate(type = "parent_given_child")
   
+  parent_given_parent <- all_probs %>%
+    filter(speaker_role == "Parent", prior_speaker == "Parent") %>%
+    mutate(term = joint_prob * log2(joint_prob/(prior_act_prob * this_act_prob))) %>%
+    group_by(age_bin) %>%
+    summarise(mi = sum(term)) %>%
+    mutate(type = "parent_given_parent")
+  
   child_given_parent <- all_probs %>%
-    filter(speaker_role == "Child") %>%
+    filter(speaker_role == "Child", prior_speaker == "Parent") %>%
     mutate(term = joint_prob * log2(joint_prob/(prior_act_prob * this_act_prob))) %>%
     group_by(age_bin) %>%
     summarise(mi = sum(term)) %>%
     mutate(type = "child_given_parent")
   
-  all_mis <- rbind(child_given_parent, parent_given_child)
+  child_given_child <- all_probs %>%
+    filter(speaker_role == "Child", prior_speaker == "Child") %>%
+    mutate(term = joint_prob * log2(joint_prob/(prior_act_prob * this_act_prob))) %>%
+    group_by(age_bin) %>%
+    summarise(mi = sum(term)) %>%
+    mutate(type = "child_given_child")
+  
+  all_mis <- rbind(child_given_parent, parent_given_child, child_given_child, parent_given_parent)
   return(all_mis)
 }
 
